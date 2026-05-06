@@ -195,10 +195,27 @@ function Topbar({title,onBack,badge,badgeClass,children}) {
   </div>;
 }
 function BairroSelect({value,onChange,id}) {
-  return <select id={id} value={value} onChange={e=>onChange(e.target.value)}>
-    <option value="">— Selecione o bairro —</option>
-    {BAIRROS.map(([v,l])=><option key={v} value={v}>{l}</option>)}
-  </select>;
+  const [search,setSearch]=useState('');
+  const filtered=BAIRROS.filter(([v,l])=>l.toLowerCase().includes(search.toLowerCase())||v.toLowerCase().includes(search.toLowerCase()));
+  const label=value?BAIRROS.find(([v])=>v===value)?.[1]||value:'';
+  return <div style={{position:'relative'}}>
+    <div style={{display:'flex',gap:6}}>
+      <input
+        value={search||label}
+        onChange={e=>{setSearch(e.target.value);if(!e.target.value)onChange('');}}
+        placeholder="Digite ou escolha o bairro..."
+        style={{flex:1}}
+        onFocus={e=>e.target.select()}
+      />
+      {value&&<button onClick={()=>{onChange('');setSearch('');}} style={{padding:'0 10px',borderRadius:'var(--rs)',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:16,color:'var(--text2)'}}>✕</button>}
+    </div>
+    {search&&!value&&filtered.length>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'var(--bg)',border:'1px solid var(--border)',borderRadius:'var(--rs)',boxShadow:'0 4px 16px rgba(0,0,0,.1)',zIndex:50,maxHeight:200,overflowY:'auto'}}>
+      {filtered.map(([v,l])=><div key={v} onClick={()=>{onChange(v);setSearch('');}} style={{padding:'10px 14px',cursor:'pointer',fontSize:14,borderBottom:'1px solid var(--border)'}} onMouseOver={e=>e.target.style.background='var(--bg2)'} onMouseOut={e=>e.target.style.background=''}>
+        {l}
+      </div>)}
+    </div>}
+    {search&&!value&&filtered.length===0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'var(--bg)',border:'1px solid var(--border)',borderRadius:'var(--rs)',padding:'10px 14px',fontSize:13,color:'var(--text2)',zIndex:50}}>Nenhum bairro encontrado</div>}
+  </div>;
 }
 function OrderCard({order,actions,showCourierPrice=false}) {
   const price = showCourierPrice?(order.courier_price?+order.courier_price:+order.price*0.8):+order.price;
@@ -275,7 +292,7 @@ function AuthPage() {
   const toast=useToast(); const {profile}=useAuth();
   useEffect(()=>{const r=new URLSearchParams(window.location.search).get('role');if(r==='courier'||r==='client')setRegRole(r);},[]);
   const doLogin=async()=>{setErr('');if(!liEmail||!liPass){setErr('Preencha e-mail e senha.');return;}setLoading(true);const{error}=await db.auth.signInWithPassword({email:liEmail,password:liPass});if(error){setErr(error.message.includes('Invalid')?'E-mail ou senha incorretos.':error.message);setLoading(false);return;}await db.auth.signOut({scope:'others'});if(liRem)localStorage.setItem('rem_email',liEmail);else localStorage.removeItem('rem_email');toast('Bem-vindo de volta! 👋');setLoading(false);};
-  const doRegister=async()=>{setErr('');if(regRole==='admin'){setErr('Cadastro de admin não permitido.');return;}if(!rgName||!rgEmail||!rgPass){setErr('Preencha todos os campos.');return;}if(rgPass.length<6){setErr('Senha deve ter ao menos 6 caracteres.');return;}if(rgPass!==rgPass2){setErr('As senhas não coincidem.');return;}if(regRole==='courier'&&!rgPlate){setErr('Informe a placa.');return;}setLoading(true);const{data:ex}=await db.from('users').select('role').eq('email',rgEmail).maybeSingle();if(ex){const rl={client:'cliente',courier:'entregador',admin:'administrador'};setErr(`E-mail já cadastrado como ${rl[ex.role]}.`);setLoading(false);return;}const ref=new URLSearchParams(window.location.search).get('ref');let refId=null;if(ref&&regRole==='courier'){const{data:r}=await db.from('users').select('id,can_refer').eq('referral_code',ref).maybeSingle();if(r?.can_refer)refId=r.id;}const{data:auth,error:ae}=await db.auth.signUp({email:rgEmail,password:rgPass});if(ae){setErr(ae.message.includes('already')?'E-mail já cadastrado.':ae.message);setLoading(false);return;}const p={auth_id:auth.user.id,name:rgName,email:rgEmail,role:regRole};if(regRole==='courier'){p.vehicle=rgVeh;p.plate=rgPlate;}if(refId)p.referred_by=refId;const{error:de}=await db.from('users').insert(p);setLoading(false);if(de){setErr('Erro ao salvar perfil. Execute o SQL no Supabase.');return;}toast('Conta criada! 🎉');};
+  const doRegister=async()=>{setErr('');if(regRole==='admin'){setErr('Cadastro de admin não permitido.');return;}if(!rgName||!rgEmail||!rgPass){setErr('Preencha todos os campos.');return;}if(rgPass.length<6){setErr('Senha deve ter ao menos 6 caracteres.');return;}if(rgPass!==rgPass2){setErr('As senhas não coincidem.');return;}if(regRole==='courier'&&!rgPlate){setErr('Informe a placa.');return;}setLoading(true);const{data:ex}=await db.from('users').select('role').eq('email',rgEmail).maybeSingle();if(ex){const rl={client:'cliente',courier:'entregador',admin:'administrador'};setErr(`E-mail já cadastrado como ${rl[ex.role]}.`);setLoading(false);return;}const ref=new URLSearchParams(window.location.search).get('ref');let refId=null;if(ref&&regRole==='courier'){const{data:r}=await db.from('users').select('id,can_refer').eq('referral_code',ref).maybeSingle();if(r?.can_refer)refId=r.id;}const{data:auth,error:ae}=await db.auth.signUp({email:rgEmail,password:rgPass});if(ae){setErr(ae.message.includes('already')?'E-mail já cadastrado.':ae.message);setLoading(false);return;}const p={auth_id:auth.user.id,name:rgName,email:rgEmail,role:regRole,phone:rgPhone};if(regRole==='courier'){p.vehicle=rgVeh;p.plate=rgPlate;}if(refId)p.referred_by=refId;const{error:de}=await db.from('users').insert(p);setLoading(false);if(de){setErr('Erro ao salvar perfil. Execute o SQL no Supabase.');return;}toast('Conta criada! 🎉');};
   const doForgot=async()=>{setErr('');if(!fpEmail){setErr('Digite seu e-mail.');return;}const{error}=await db.auth.resetPasswordForEmail(fpEmail);if(error){setErr(error.message);return;}toast('Link enviado para '+fpEmail);setTab('login');};
   const heroSub=()=>{const r=new URLSearchParams(window.location.search).get('role');if(r==='courier')return'🛵 Acesso exclusivo para entregadores';if(r==='client')return'🛍️ Acesso exclusivo para clientes';return'Coleta e entrega em tempo real';};
   return <div className="screen">
@@ -304,6 +321,7 @@ function AuthPage() {
       </div>
       <div className="fgrp"><label className="flabel">Nome completo</label><input value={rgName} onChange={e=>setRgName(e.target.value)} placeholder="Ana Souza"/></div>
       <div className="fgrp"><label className="flabel">E-mail</label><input type="email" value={rgEmail} onChange={e=>setRgEmail(e.target.value)} placeholder="seu@email.com"/></div>
+      <div className="fgrp"><label className="flabel">WhatsApp (com DDD)</label><input type="tel" value={rgPhone} onChange={e=>setRgPhone(e.target.value)} placeholder="(21) 99999-0000"/></div>
       <div className="fgrp"><label className="flabel">Senha (mínimo 6 caracteres)</label><input type="password" value={rgPass} onChange={e=>setRgPass(e.target.value)} placeholder="••••••••"/></div>
       <div className="fgrp"><label className="flabel">Confirmar senha</label><input type="password" value={rgPass2} onChange={e=>setRgPass2(e.target.value)} placeholder="••••••••"/></div>
       {regRole==='courier'&&<div className="fgrp"><div style={{display:'flex',gap:8}}><div style={{flex:1}}><label className="flabel">Veículo</label><select value={rgVeh} onChange={e=>setRgVeh(e.target.value)}><option>Moto</option><option>Bicicleta</option><option>Carro</option></select></div><div style={{flex:1}}><label className="flabel">Placa</label><input value={rgPlate} onChange={e=>setRgPlate(e.target.value)} placeholder="ABC-1234"/></div></div></div>}
@@ -338,6 +356,7 @@ function ProfilePage({goBack}) {
         <div style={{fontSize:13,color:'var(--text2)'}}>{profile?.email}</div>
         <div style={{marginTop:6}}><span className={`rbadge ${roleCls[profile?.role]}`}>{roleLabel[profile?.role]}</span></div>
         {profile?.vehicle&&<div style={{fontSize:12,color:'var(--text2)',marginTop:6}}>{profile.vehicle} · {profile.plate}</div>}
+        {profile?.phone&&<div style={{fontSize:12,color:'var(--text2)',marginTop:4}}>📱 {profile.phone}</div>}
       </div>
       <div style={{background:'var(--bg2)',borderRadius:'var(--r)',padding:14,marginBottom:16}}>
         <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:12}}>Alterar senha</div>
@@ -378,31 +397,64 @@ function ClientOrders({setPage,setTrackId}) {
 
 function NewOrder({setPage}) {
   const {profile}=useAuth(); const toast=useToast();
-  const [pickup,setPickup]=useState(''),[pickupC,setPickupC]=useState('');
-  const [bairro,setBairro]=useState(''),[delivery,setDelivery]=useState(''),[deliveryC,setDeliveryC]=useState('');
-  const [item,setItem]=useState(''),[pay,setPay]=useState('App'),[loading,setLoading]=useState(false);
+  const DEFAULT_PICKUP = profile?.address || 'Loja Icaraí';
+  const [pickup,setPickup]=useState('');
+  const [bairro,setBairro]=useState('');
+  const [delivery,setDelivery]=useState('');
+  const [item,setItem]=useState('');
+  const [pay,setPay]=useState('App');
+  const [loading,setLoading]=useState(false);
   const prices=bairro?BAIRRO_PRECO[bairro]:null;
-  const getBairroLabel=()=>{const sel=document.getElementById('p-bairro');return sel?sel.options[sel.selectedIndex]?.text:bairro;};
+  const bairroLabel=bairro?BAIRROS.find(([v])=>v===bairro)?.[1]||bairro:'';
+
+  // Set default pickup from profile
+  useEffect(()=>{
+    if(profile?.address) setPickup(profile.address);
+  },[profile]);
+
   const submit=async()=>{
-    if(!bairro){toast('Selecione o bairro');return;}if(!item){toast('Descreva o que será coletado');return;}
-    setLoading(true);const label=getBairroLabel();
-    const{error}=await db.from('orders').insert({client_id:profile.id,client_name:profile.name,pickup_addr:pickup||'Icaraí (a confirmar)',pickup_comp:pickupC,delivery_addr:(delivery||label)+(delivery&&label?` — ${label}`:''),delivery_comp:deliveryC,neighborhood:bairro,item_desc:item,pay_method:pay,price:prices.cliente,courier_price:prices.entregador,status:'waiting'});
-    setLoading(false);if(error){toast('Erro ao criar pedido');return;}toast('Pedido criado! 🎉');setPage('client-orders');
+    if(!bairro){toast('Selecione o bairro de entrega');return;}
+    if(!item){toast('Descreva o que será coletado');return;}
+    setLoading(true);
+    const{error}=await db.from('orders').insert({
+      client_id:profile.id,client_name:profile.name,
+      pickup_addr:pickup||'Icaraí (a confirmar)',
+      delivery_addr:(delivery?delivery+' — ':'')+bairroLabel,
+      neighborhood:bairro,item_desc:item,pay_method:pay,
+      price:prices.cliente,courier_price:prices.entregador,status:'waiting'
+    });
+    setLoading(false);
+    if(error){toast('Erro ao criar pedido');return;}
+    toast('Pedido criado! Aguardando entregador 🎉');
+    setPage('client-orders');
   };
+
   return <div className="screen">
     <Topbar title="Novo pedido" onBack={()=>setPage('client-orders')} badge="Cliente" badgeClass="bc"/>
     <div className="scroll">
-      <div className="stitle">Coleta (loja em Icaraí)</div>
-      <div className="fgrp"><label className="flabel">Endereço de coleta</label><input value={pickup} onChange={e=>setPickup(e.target.value)} placeholder="Rua, número (opcional)"/></div>
-      <div className="fgrp"><label className="flabel">Complemento</label><input value={pickupC} onChange={e=>setPickupC(e.target.value)} placeholder="Opcional"/></div>
-      <div className="stitle">Entrega</div>
-      <div className="fgrp"><label className="flabel">Bairro de entrega</label><BairroSelect id="p-bairro" value={bairro} onChange={setBairro}/></div>
-      <div className="fgrp"><label className="flabel">Endereço completo</label><input value={delivery} onChange={e=>setDelivery(e.target.value)} placeholder="Rua, número (opcional)"/></div>
-      <div className="fgrp"><label className="flabel">Complemento</label><input value={deliveryC} onChange={e=>setDeliveryC(e.target.value)} placeholder="Opcional"/></div>
-      <div className="stitle">Pacote</div>
+      <div className="stitle">📍 Local de retirada</div>
+      <div className="fgrp">
+        <label className="flabel">Endereço completo (rua, número, complemento)</label>
+        <input value={pickup} onChange={e=>setPickup(e.target.value)} placeholder="Rua, número, apto, referência..."/>
+        {profile?.address&&pickup!==profile.address&&<button onClick={()=>setPickup(profile.address)} style={{marginTop:5,fontSize:12,color:'var(--blue)',background:'none',border:'none',cursor:'pointer',padding:0,textDecoration:'underline'}}>↩ Usar meu endereço padrão</button>}
+      </div>
+      <div className="stitle">🏠 Local de entrega</div>
+      <div className="fgrp">
+        <label className="flabel">Bairro</label>
+        <BairroSelect id="p-bairro" value={bairro} onChange={setBairro}/>
+      </div>
+      <div className="fgrp">
+        <label className="flabel">Endereço completo (rua, número, complemento)</label>
+        <input value={delivery} onChange={e=>setDelivery(e.target.value)} placeholder="Rua, número, apto, referência... (opcional)"/>
+      </div>
+      <div className="stitle">📦 Pacote</div>
       <div className="fgrp"><label className="flabel">O que será coletado?</label><textarea value={item} onChange={e=>setItem(e.target.value)} placeholder="Ex: 2 marmitas, 1 envelope A4..."/></div>
       <div className="fgrp"><label className="flabel">Pagamento</label><select value={pay} onChange={e=>setPay(e.target.value)}><option>App</option><option>Pix</option><option>Dinheiro</option></select></div>
-      {prices&&<div className="pbox"><div className="prow"><span>Bairro</span><span style={{fontWeight:700,color:'var(--text)'}}>{getBairroLabel()}</span></div><div className="ptotal"><span>Valor da entrega</span><span style={{color:'var(--blue)'}}>{fmtMoney(prices.cliente)}</span></div><div style={{fontSize:11,color:'var(--text2)',marginTop:8}}>Valor fixo por bairro · sem cobranças extras.</div></div>}
+      {prices&&<div className="pbox">
+        <div className="prow"><span>Bairro de entrega</span><span style={{fontWeight:700,color:'var(--text)'}}>{bairroLabel}</span></div>
+        <div className="ptotal"><span>Valor da entrega</span><span style={{color:'var(--blue)',fontSize:18}}>{fmtMoney(prices.cliente)}</span></div>
+        <div style={{fontSize:11,color:'var(--text2)',marginTop:8}}>✓ Valor fixo por bairro · sem cobranças extras</div>
+      </div>}
       <button className="btn btn-blue" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading}>{loading?'Enviando...':'Solicitar entregador'}</button>
     </div>
   </div>;
@@ -427,7 +479,16 @@ function TrackOrder({orderId,setPage}) {
         <div style={{fontSize:13,fontWeight:600,color:order.status==='done'?'var(--green)':order.status==='cancelled'?'var(--red)':'var(--blue)'}}>{labels[order.status]}</div>
       </div>
       {showMap&&<><div style={{padding:'8px 14px 4px',display:'flex',alignItems:'center',gap:6}}><span className="rdot"></span><span style={{fontSize:12,color:'var(--text2)',fontWeight:600}}>Localização ao vivo</span></div><LiveMap courierLat={cpos.lat} courierLng={cpos.lng} courierName={order.courier_name} status={order.status}/></>}
-      {order.courier_name&&<div style={{margin:'0 14px 10px',padding:'12px 14px',background:'var(--bg2)',borderRadius:'var(--rs)',display:'flex',alignItems:'center',gap:12}}><div style={{width:36,height:36,borderRadius:'50%',background:'var(--green-l)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>🛵</div><div><div style={{fontSize:13,fontWeight:600}}>{order.courier_name}</div><div style={{fontSize:11,color:'var(--text2)'}}>{cpos.lat?'📍 Localização ativa':'★ Entregador a caminho'}</div></div></div>}
+      {order.courier_name&&<div style={{margin:'0 14px 10px',padding:'12px 14px',background:'var(--bg2)',borderRadius:'var(--rs)',display:'flex',alignItems:'center',gap:10}}>
+        <div style={{width:36,height:36,borderRadius:'50%',background:'var(--green-l)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>🛵</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,fontWeight:600}}>{order.courier_name}</div>
+          <div style={{fontSize:11,color:'var(--text2)'}}>{cpos.lat?'📍 Localização ativa':'★ Entregador a caminho'}</div>
+        </div>
+        {order.courier_phone&&<a href={`https://wa.me/55${order.courier_phone.replace(/\D/g,'')}`} target="_blank" style={{display:'flex',alignItems:'center',gap:5,padding:'7px 12px',background:'#25D366',color:'white',borderRadius:'var(--rs)',textDecoration:'none',fontSize:12,fontWeight:600,flexShrink:0}}>
+          <span>💬</span><span>Zap</span>
+        </a>}
+      </div>}
       <div style={{padding:'8px 14px',display:'flex',flexDirection:'column',gap:7}}>{steps.map((s,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10}}><div style={{width:22,height:22,borderRadius:'50%',border:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,background:s.d?'var(--green)':'transparent',borderColor:s.d?'var(--green)':'var(--border)',fontSize:11,color:'white',fontWeight:700}}>{s.d?'✓':''}</div><span style={{fontSize:13,color:s.d?'var(--text)':'var(--text2)'}}>{s.l}</span></div>)}</div>
       <div style={{padding:'4px 14px 16px'}}><div style={{padding:'10px 12px',background:'var(--bg2)',borderRadius:'var(--rs)',marginTop:4}}><div style={{fontSize:11,color:'var(--text2)',marginBottom:4}}>Conteúdo</div><div style={{fontSize:13}}>{order.item_desc}</div></div></div>
     </div>
@@ -470,11 +531,29 @@ function CourierDash({setPage}) {
     if(l1?.can_refer){await db.from('referral_bonuses').insert({earner_id:l1.id,earner_name:l1.name,source_courier_id:c.id,source_courier_name:c.name,order_id:order.id,level:1,amount:REFERRAL_L1,week_start:ws,week_end:we});if(l1.referred_by){const{data:l2}=await db.from('users').select('id,name,can_refer').eq('id',l1.referred_by).single();if(l2?.can_refer)await db.from('referral_bonuses').insert({earner_id:l2.id,earner_name:l2.name,source_courier_id:c.id,source_courier_name:c.name,order_id:order.id,level:2,amount:REFERRAL_L2,week_start:ws,week_end:we});}}
   };
 
-  const accept=async id=>{const{error}=await db.from('orders').update({courier_id:profile.id,courier_name:profile.name,status:'accepted',updated_at:new Date().toISOString()}).eq('id',id).eq('status','waiting');if(error){toast('Pedido já aceito por outro');return;}toast('Pedido aceito! 🛵');loadAll();};
+  const accept=async id=>{const{error}=await db.from('orders').update({courier_id:profile.id,courier_name:profile.name,courier_phone:profile.phone||null,status:'accepted',updated_at:new Date().toISOString()}).eq('id',id).eq('status','waiting');if(error){toast('Pedido já aceito por outro');return;}toast('Pedido aceito! 🛵');loadAll();};
   const advance=async(id,next)=>{await db.from('orders').update({status:next,updated_at:new Date().toISOString()}).eq('id',id);if(next==='done'){toast('Entrega concluída! 🎉');const{data:o}=await db.from('orders').select('*').eq('id',id).single();if(o)await processBonus(o);}else toast('Status atualizado ✓');loadAll();};
   const toggleOnline=async()=>{const next=!online;if(next&&navigator.geolocation){navigator.geolocation.getCurrentPosition(async pos=>{await db.from('users').update({is_online:true,lat:pos.coords.latitude,lng:pos.coords.longitude}).eq('id',profile.id);},()=>db.from('users').update({is_online:true}).eq('id',profile.id));}else await db.from('users').update({is_online:next,...(next?{}:{lat:null,lng:null})}).eq('id',profile.id);setOnline(next);if(!next)setAvailable([]);else loadAvail();};
 
   const nextA={accepted:{l:'Cheguei para coletar ✓',n:'collecting'},collecting:{l:'Coletei — iniciar entrega ✓',n:'delivering'},delivering:{l:'Entregue! ✓',n:'done'}};
+
+  const ActiveOrderCard = ({o}) => {
+    const [clientPhone,setClientPhone]=useState(null);
+    useEffect(()=>{if(o?.client_id)db.from('users').select('phone').eq('id',o.client_id).single().then(({data})=>setClientPhone(data?.phone));},[o?.client_id]);
+    return <div className="ocard" style={{borderColor:'var(--blue-m)',margin:'8px 14px'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:9}}>
+        <div><div style={{fontSize:13,fontWeight:700}}>{o.id.slice(0,8).toUpperCase()}</div><div style={{fontSize:11,color:'var(--text2)'}}>Pedido ativo</div></div>
+        <span className={`sbadge ${SC[o.status]}`}>{SL[o.status]}</span>
+      </div>
+      <div className="addr-line"><div><span className="dot dg"></span>{o.pickup_addr}</div><div><span className="dot dr"></span>{o.delivery_addr}</div></div>
+      <div style={{fontSize:12,color:'var(--text2)',marginTop:5}}>👤 {o.client_name} · 📦 {o.item_desc}</div>
+      <div style={{display:'flex',gap:8,marginTop:10,alignItems:'center',flexWrap:'wrap'}}>
+        {clientPhone&&<a href={`https://wa.me/55${clientPhone.replace(/\D/g,'')}`} target="_blank" style={{display:'flex',alignItems:'center',gap:5,padding:'7px 12px',background:'#25D366',color:'white',borderRadius:'var(--rs)',textDecoration:'none',fontSize:12,fontWeight:600}}>💬 Falar com cliente</a>}
+        <button className="btn-sm progress" style={{flex:1}} onClick={()=>advance(o.id,nextA[o.status].n)}>{nextA[o.status].l}</button>
+      </div>
+    </div>;
+  };
+
   return <div className="screen">
     <Topbar title={<><span className="rdot"></span>Painel entregador</>} badge={profile?.name?.split(' ')[0]} badgeClass="bd"/>
     <div className="scroll">
@@ -482,7 +561,7 @@ function CourierDash({setPage}) {
       <div className="mrow"><div className="mcard"><div className="mval">{stats.d}</div><div className="mlbl">entregas hoje</div></div><div className="mcard"><div className="mval">R${stats.e}</div><div className="mlbl">ganhos hoje</div></div><div className="mcard"><div className="mval">★ 5.0</div><div className="mlbl">avaliação</div></div></div>
       <div className="divider"/>
       <div className="stitle">Pedido ativo</div>
-      {active?<OrderCard order={{...active,_hi:true}} showCourierPrice actions={[<button key="a" className="btn-sm progress" onClick={()=>advance(active.id,nextA[active.status].n)}>{nextA[active.status].l}</button>]}/>:<div className="notice ni" style={{margin:'8px 14px'}}>Nenhum pedido ativo. Aceite um abaixo!</div>}
+      {active?<ActiveOrderCard o={active}/>:<div className="notice ni" style={{margin:'8px 14px'}}>Nenhum pedido ativo. Aceite um abaixo!</div>}
       <div className="stitle" style={{paddingTop:8}}>Pedidos disponíveis</div>
       {loading?<Loading/>:!online?<div className="notice ni" style={{margin:'8px 14px'}}>Fique online para ver pedidos.</div>:available.length===0?<Empty icon="🔍" text="Nenhum pedido disponível agora."/>:
         available.map(o=><OrderCard key={o.id} order={o} showCourierPrice actions={[<button key="acc" className="btn-sm accept" onClick={()=>accept(o.id)}>Aceitar pedido</button>]}/>)
@@ -545,11 +624,108 @@ function AdminShell({children,page,setPage}) {
     <div className="tabbar">
       <button className={`tab-item ${page==='admin'?'active':''}`} onClick={()=>setPage('admin')}><span className="tab-icon">📊</span><span>Relatórios</span></button>
       <button className={`tab-item ${page==='admin-orders'?'active':''}`} onClick={()=>setPage('admin-orders')}><span className="tab-icon">📋</span><span>Pedidos</span></button>
+      <button className={`tab-item ${page==='admin-map'?'active':''}`} onClick={()=>setPage('admin-map')}><span className="tab-icon">🗺️</span><span>Mapa</span></button>
       <button className={`tab-item ${page==='admin-fin'?'active':''}`} onClick={()=>setPage('admin-fin')}><span className="tab-icon">💰</span><span>Financeiro</span></button>
       <button className={`tab-item ${page==='admin-new'?'active':''}`} onClick={()=>setPage('admin-new')}><span className="tab-icon">➕</span><span>Novo</span></button>
       <button className={`tab-item ${page==='profile'?'active':''}`} onClick={()=>setPage('profile')}><span className="tab-icon">👤</span><span>Perfil</span></button>
     </div>
   </div>;
+}
+
+// ===== ADMIN MAP =====
+function AdminMap({setPage}) {
+  const [couriers, setCouriers] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const mapRef = useRef(null), mapObj = useRef(null), markers = useRef({});
+
+  const load = useCallback(async () => {
+    const [cr, or] = await Promise.all([
+      db.from('users').select('id,name,lat,lng,is_online,vehicle,plate,location_updated_at').eq('role','courier'),
+      db.from('orders').select('id,courier_id,status,delivery_addr,neighborhood').in('status',['accepted','collecting','delivering'])
+    ]);
+    setCouriers(cr.data || []);
+    setOrders(or.data || []);
+  }, []);
+
+  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, [load]);
+
+  useEffect(() => {
+    const L = window.L; if (!L || !mapRef.current) return;
+    if (!mapObj.current) {
+      const map = L.map(mapRef.current, { zoomControl: true, attributionControl: false }).setView([-22.9035, -43.1337], 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+      mapObj.current = map;
+    }
+    const map = mapObj.current;
+    const seen = new Set();
+    couriers.forEach(c => {
+      if (!c.lat || !c.lng) return;
+      seen.add(c.id);
+      const activeOrder = orders.find(o => o.courier_id === c.id);
+      const color = c.is_online ? (activeOrder ? '#3B6D11' : '#185FA5') : '#888';
+      const label = activeOrder ? `🛵 ${c.name}<br><small>Entregando: ${activeOrder.neighborhood||activeOrder.delivery_addr}</small>` : `🛵 ${c.name}<br><small>${c.is_online ? 'Online — aguardando' : 'Offline'}</small>`;
+      const html = `<div style="background:${color};width:38px;height:38px;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,.35);cursor:pointer;">🛵</div>`;
+      const icon = L.divIcon({ html, iconSize:[38,38], iconAnchor:[19,19], className:'' });
+      if (markers.current[c.id]) {
+        markers.current[c.id].setLatLng([c.lat, c.lng]).setIcon(icon).setPopupContent(`<strong>${label}</strong>`);
+      } else {
+        markers.current[c.id] = L.marker([c.lat, c.lng], { icon }).addTo(map).bindPopup(`<strong>${label}</strong>`);
+      }
+    });
+    // remove markers of couriers no longer visible
+    Object.keys(markers.current).forEach(id => {
+      if (!seen.has(id)) { markers.current[id].remove(); delete markers.current[id]; }
+    });
+  }, [couriers, orders]);
+
+  const online  = couriers.filter(c => c.is_online && c.lat);
+  const offline = couriers.filter(c => !c.is_online || !c.lat);
+  const active  = couriers.filter(c => orders.find(o => o.courier_id === c.id));
+
+  return <AdminShell page="admin-map" setPage={setPage}>
+    <Topbar title="Mapa ao vivo" badge="Admin" badgeClass="ba">
+      <button className="btn-sm" onClick={load} style={{marginLeft:'auto',fontSize:11}}>↻ Atualizar</button>
+    </Topbar>
+    <div className="scroll" style={{paddingBottom:0}}>
+      {/* Stats strip */}
+      <div style={{display:'flex',gap:8,padding:'10px 14px 8px'}}>
+        <div className="mcard" style={{flex:1}}><div className="mval" style={{color:'var(--green)',fontSize:18}}>{online.length}</div><div className="mlbl">online c/ GPS</div></div>
+        <div className="mcard" style={{flex:1}}><div className="mval" style={{color:'var(--blue)',fontSize:18}}>{active.length}</div><div className="mlbl">em entrega</div></div>
+        <div className="mcard" style={{flex:1}}><div className="mval" style={{color:'var(--text2)',fontSize:18}}>{offline.length}</div><div className="mlbl">offline</div></div>
+      </div>
+
+      {/* Legend */}
+      <div style={{padding:'0 14px 8px',display:'flex',gap:14,fontSize:12,color:'var(--text2)'}}>
+        <span><span style={{display:'inline-block',width:10,height:10,borderRadius:'50%',background:'#3B6D11',marginRight:4}}></span>Em entrega</span>
+        <span><span style={{display:'inline-block',width:10,height:10,borderRadius:'50%',background:'#185FA5',marginRight:4}}></span>Online / livre</span>
+        <span><span style={{display:'inline-block',width:10,height:10,borderRadius:'50%',background:'#888',marginRight:4}}></span>Offline</span>
+      </div>
+
+      {/* Map */}
+      <div ref={mapRef} style={{height:'calc(100vh - 280px)',width:'100%',minHeight:300}}/>
+
+      {/* Courier list */}
+      <div style={{padding:'10px 14px 0'}}>
+        <div className="stitle" style={{padding:'8px 0 6px'}}>Entregadores</div>
+        {couriers.length === 0
+          ? <div className="notice ni">Nenhum entregador cadastrado.</div>
+          : couriers.map(c => {
+            const aOrder = orders.find(o => o.courier_id === c.id);
+            const lastSeen = c.location_updated_at ? ago(c.location_updated_at) : 'sem GPS';
+            return <div key={c.id} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{width:36,height:36,borderRadius:'50%',background:c.is_online?'var(--green-l)':'var(--bg2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>🛵</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:600}}>{c.name}</div>
+                <div style={{fontSize:11,color:'var(--text2)'}}>{c.vehicle||'Moto'}{c.plate?` · ${c.plate}`:''} · GPS: {lastSeen}</div>
+                {aOrder && <div style={{fontSize:11,color:'var(--green)',marginTop:2}}>📦 Entregando: {aOrder.neighborhood||aOrder.delivery_addr}</div>}
+              </div>
+              <span className={`sbadge ${c.is_online ? (aOrder?'sc':'sa') : 'scanc'}`}>{c.is_online ? (aOrder?'Em entrega':'Online') : 'Offline'}</span>
+            </div>;
+          })
+        }
+      </div>
+    </div>
+  </AdminShell>;
 }
 
 function AdminReports({setPage}) {
@@ -684,7 +860,7 @@ function App() {
   useEffect(() => {
     if (loading) return;
     if (!profile) { setPage('auth'); return; }
-    if (profile.role === 'client')  setPage('client-orders');
+    if (profile.role === 'client')  setPage('new-order');
     if (profile.role === 'courier') setPage('courier');
     if (profile.role === 'admin')   setPage('admin');
   }, [profile, loading]);
@@ -706,6 +882,7 @@ function App() {
     case 'courier':       return <CourierDash setPage={setPage}/>;
     case 'courier-fin':   return <CourierFin setPage={setPage}/>;
     case 'admin':         return <AdminReports setPage={setPage}/>;
+    case 'admin-map':     return <AdminMap setPage={setPage}/>;
     case 'admin-orders':  return <AdminOrders setPage={setPage} setAllocId={setAllocId}/>;
     case 'admin-new':     return <AdminNewOrder setPage={setPage}/>;
     case 'admin-alloc':   return <AdminAlloc orderId={allocId} setPage={setPage}/>;
