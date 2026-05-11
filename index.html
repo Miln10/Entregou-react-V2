@@ -2428,6 +2428,115 @@ function AdminMap({setPage}) {
   </AdminShell>;
 }
 
+
+// ===== ADMIN NEW CLIENT =====
+function AdminNewClient({setPage}) {
+  const toast = useToast();
+  const [name, setName]       = useState('');
+  const [email, setEmail]     = useState('');
+  const [pass, setPass]       = useState('');
+  const [phone, setPhone]     = useState('');
+  const [address, setAddress] = useState('');
+  const [err, setErr]         = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showPass, setShowPass] = useState(false);
+  const [done, setDone]       = useState(null);
+
+  const submit = async () => {
+    setErr('');
+    if (!name)  { setErr('Informe o nome da loja.'); return; }
+    if (!email) { setErr('Informe o e-mail.'); return; }
+    if (!pass || pass.length < 6) { setErr('Senha deve ter ao menos 6 caracteres.'); return; }
+    // Check duplicate
+    const { data: ex } = await db.from('users').select('id').eq('email', email).maybeSingle();
+    if (ex) { setErr('E-mail já cadastrado.'); return; }
+    setLoading(true);
+    // Create auth user
+    const { data: auth, error: ae } = await db.auth.admin
+      ? db.auth.signUp({ email, password: pass })
+      : db.auth.signUp({ email, password: pass });
+    // Use signUp (works without admin key)
+    const { data: authData, error: authErr } = await db.auth.signUp({ email, password: pass });
+    if (authErr) { setErr(authErr.message.includes('already') ? 'E-mail já cadastrado.' : authErr.message); setLoading(false); return; }
+    // Insert user profile
+    const { error: dbErr } = await db.from('users').insert({
+      auth_id: authData.user.id,
+      name, email, role: 'client',
+      phone: phone || null,
+      address: address || null,
+    });
+    setLoading(false);
+    if (dbErr) { setErr('Erro ao salvar perfil: ' + dbErr.message); return; }
+    setDone({ name, email });
+    toast('Cliente ' + name + ' cadastrado com sucesso! ✓');
+  };
+
+  const reset = () => { setName(''); setEmail(''); setPass(''); setPhone(''); setAddress(''); setErr(''); setDone(null); };
+
+  return <AdminShell page="admin-new-client" setPage={setPage}>
+    <Topbar title="Cadastrar cliente" onBack={()=>setPage('admin')} badge="Admin" badgeClass="ba"/>
+    <div className="scroll">
+
+      {done ? <div style={{padding:'30px 20px',textAlign:'center'}}>
+        <div style={{fontSize:40,marginBottom:12}}>✅</div>
+        <div style={{fontSize:16,fontWeight:600,marginBottom:6}}>{done.name} cadastrado!</div>
+        <div style={{fontSize:13,color:'var(--text2)',marginBottom:20}}>{done.email}</div>
+        <div className="notice ni" style={{textAlign:'left',marginBottom:16}}>
+          <strong>Próximos passos:</strong><br/>
+          1. Configure a tabela de preços em <strong>⚙️ Config → Clientes</strong><br/>
+          2. Vincule a uma rede em <strong>⚙️ Config → Redes</strong><br/>
+          3. Envie o link de acesso para o cliente:<br/>
+          <span style={{fontFamily:'monospace',fontSize:11,wordBreak:'break-all',color:'var(--blue)'}}>
+            {window.location.origin+window.location.pathname}?role=client
+          </span>
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-blue" onClick={reset}>Cadastrar outro cliente</button>
+        </div>
+      </div>
+
+      : <div>
+        <div className="notice ni" style={{marginTop:10}}>
+          O cliente receberá acesso ao app com este e-mail e senha. Configure os preços depois em ⚙️ Config → Clientes.
+        </div>
+
+        <div className="stitle">🏪 Dados da loja</div>
+        <div className="fgrp">
+          <label className="flabel">Nome da loja *</label>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Ex: Cali Burritos"/>
+        </div>
+        <div className="fgrp">
+          <label className="flabel">Endereço da loja (ponto de coleta padrão)</label>
+          <input value={address} onChange={e=>setAddress(e.target.value)} placeholder="Rua, número, bairro"/>
+        </div>
+        <div className="fgrp">
+          <label className="flabel">WhatsApp</label>
+          <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} placeholder="(21) 99999-0000"/>
+        </div>
+
+        <div className="stitle">🔐 Acesso ao app</div>
+        <div className="fgrp">
+          <label className="flabel">E-mail *</label>
+          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="email@loja.com"/>
+        </div>
+        <div className="fgrp">
+          <label className="flabel">Senha inicial *</label>
+          <div className="inp-wrap">
+            <input type={showPass?'text':'password'} value={pass} onChange={e=>setPass(e.target.value)} placeholder="Mínimo 6 caracteres"/>
+            <button className="eye-btn" onClick={()=>setShowPass(v=>!v)}>{showPass?'🙈':'👁'}</button>
+          </div>
+        </div>
+
+        <div className="err-msg">{err}</div>
+        <button className="btn btn-blue" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading}>
+          {loading ? 'Cadastrando...' : 'Cadastrar cliente'}
+        </button>
+      </div>}
+
+    </div>
+  </AdminShell>;
+}
+
 function AdminReports({setPage}) {
   return <AdminShell page="admin" setPage={setPage}>
     <Topbar title="Início" badge="Admin" badgeClass="ba"/>
@@ -2697,7 +2806,8 @@ function App() {
     case 'admin-couriers': return <AdminCouriers setPage={setPage}/>;
     case 'admin-manual':   return <AdminManualDelivery setPage={setPage}/>;
     case 'client-closing': return <ClientClosing setPage={setPage}/>;
-    case 'admin-shifts':   return <AdminShifts setPage={setPage}/>;
+    case 'admin-shifts':      return <AdminShifts setPage={setPage}/>;
+    case 'admin-new-client': return <AdminNewClient setPage={setPage}/>;
     case 'courier-card':   return <CourierCard setPage={setPage}/>
     case 'courier-shifts': return <CourierShifts setPage={setPage}/>;
     case 'courier-closing':return <CourierClosing setPage={setPage}/>;
