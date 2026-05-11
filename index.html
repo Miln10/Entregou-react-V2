@@ -189,6 +189,19 @@ const ago = iso => { if(!iso)return''; const d=Math.floor((Date.now()-new Date(i
 const getWeekBounds = (offset=0) => { const now=new Date(),day=now.getDay(),diff=day===0?-6:1-day,mon=new Date(now); mon.setDate(now.getDate()+diff+offset*7); mon.setHours(0,0,0,0); const sun=new Date(mon); sun.setDate(mon.getDate()+6); sun.setHours(23,59,59,999); return{start:mon,end:sun}; };
 const genCode = name => name.toUpperCase().replace(/[^A-Z]/g,'').slice(0,4) + Math.random().toString(36).slice(2,6).toUpperCase();
 
+// forced_level: quando admin define manualmente (sobrescreve o calculado)
+// SQL necessário: 
+//   alter table users add column if not exists forced_level int;
+//   alter table users add column if not exists network_id uuid references networks(id);
+
+async function genCourierNumber() {
+  // Busca o maior número atual e incrementa
+  const { data } = await db.from('users').select('courier_number').eq('role','courier').not('courier_number','is',null).order('courier_number',{ascending:false}).limit(1);
+  if (!data || !data.length || !data[0].courier_number) return '001';
+  const last = parseInt(data[0].courier_number) || 0;
+  return String(last + 1).padStart(3, '0');
+}
+
 // ===== CONTEXTS =====
 const ToastCtx = createContext(null);
 function ToastProvider({children}) {
@@ -330,7 +343,7 @@ function AuthPage() {
   const toast=useToast(); const {profile}=useAuth();
   useEffect(()=>{const r=new URLSearchParams(window.location.search).get('role');if(r==='courier'||r==='client')setRegRole(r);},[]);
   const doLogin=async()=>{setErr('');if(!liEmail||!liPass){setErr('Preencha e-mail e senha.');return;}setLoading(true);const{error}=await db.auth.signInWithPassword({email:liEmail,password:liPass});if(error){setErr(error.message.includes('Invalid')?'E-mail ou senha incorretos.':error.message);setLoading(false);return;}await db.auth.signOut({scope:'others'});if(liRem)localStorage.setItem('rem_email',liEmail);else localStorage.removeItem('rem_email');toast('Bem-vindo de volta! 👋');setLoading(false);};
-  const doRegister=async()=>{setErr('');if(regRole==='admin'){setErr('Cadastro de admin não permitido.');return;}if(!rgName||!rgEmail||!rgPass){setErr('Preencha todos os campos.');return;}if(rgPass.length<6){setErr('Senha deve ter ao menos 6 caracteres.');return;}if(rgPass!==rgPass2){setErr('As senhas não coincidem.');return;}if(regRole==='courier'&&!rgPlate){setErr('Informe a placa.');return;}setLoading(true);const{data:ex}=await db.from('users').select('role').eq('email',rgEmail).maybeSingle();if(ex){const rl={client:'cliente',courier:'entregador',admin:'administrador'};setErr(`E-mail já cadastrado como ${rl[ex.role]}.`);setLoading(false);return;}const ref=new URLSearchParams(window.location.search).get('ref');let refId=null;if(ref&&regRole==='courier'){const{data:r}=await db.from('users').select('id,can_refer').eq('referral_code',ref).maybeSingle();if(r?.can_refer)refId=r.id;}const{data:auth,error:ae}=await db.auth.signUp({email:rgEmail,password:rgPass});if(ae){setErr(ae.message.includes('already')?'E-mail já cadastrado.':ae.message);setLoading(false);return;}const p={auth_id:auth.user.id,name:rgName,email:rgEmail,role:regRole,phone:rgPhone};if(regRole==='courier'){p.vehicle=rgVeh;p.plate=rgPlate;}if(refId)p.referred_by=refId;const{error:de}=await db.from('users').insert(p);setLoading(false);if(de){setErr('Erro ao salvar perfil. Execute o SQL no Supabase.');return;}toast('Conta criada! 🎉');};
+  const doRegister=async()=>{setErr('');if(regRole==='admin'){setErr('Cadastro de admin não permitido.');return;}if(!rgName||!rgEmail||!rgPass){setErr('Preencha todos os campos.');return;}if(rgPass.length<6){setErr('Senha deve ter ao menos 6 caracteres.');return;}if(rgPass!==rgPass2){setErr('As senhas não coincidem.');return;}if(regRole==='courier'&&!rgPlate){setErr('Informe a placa.');return;}setLoading(true);const{data:ex}=await db.from('users').select('role').eq('email',rgEmail).maybeSingle();if(ex){const rl={client:'cliente',courier:'entregador',admin:'administrador'};setErr(`E-mail já cadastrado como ${rl[ex.role]}.`);setLoading(false);return;}const ref=new URLSearchParams(window.location.search).get('ref');let refId=null;if(ref&&regRole==='courier'){const{data:r}=await db.from('users').select('id,can_refer').eq('referral_code',ref).maybeSingle();if(r?.can_refer)refId=r.id;}const{data:auth,error:ae}=await db.auth.signUp({email:rgEmail,password:rgPass});if(ae){setErr(ae.message.includes('already')?'E-mail já cadastrado.':ae.message);setLoading(false);return;}const p={auth_id:auth.user.id,name:rgName,email:rgEmail,role:regRole,phone:rgPhone};if(regRole==='courier'){p.vehicle=rgVeh;p.plate=rgPlate;p.courier_number=await genCourierNumber();}if(refId)p.referred_by=refId;const{error:de}=await db.from('users').insert(p);setLoading(false);if(de){setErr('Erro ao salvar perfil. Execute o SQL no Supabase.');return;}toast('Conta criada! 🎉');};
   const doForgot=async()=>{setErr('');if(!fpEmail){setErr('Digite seu e-mail.');return;}const{error}=await db.auth.resetPasswordForEmail(fpEmail);if(error){setErr(error.message);return;}toast('Link enviado para '+fpEmail);setTab('login');};
   const heroSub=()=>{const r=new URLSearchParams(window.location.search).get('role');if(r==='courier')return'🛵 Acesso exclusivo para entregadores';if(r==='client')return'🛍️ Acesso exclusivo para clientes';return'Coleta e entrega em tempo real';};
   return <div className="screen">
@@ -523,9 +536,12 @@ function TrackOrder({orderId,setPage}) {
       </div>
       {showMap&&<><div style={{padding:'8px 14px 4px',display:'flex',alignItems:'center',gap:6}}><span className="rdot"></span><span style={{fontSize:12,color:'var(--text2)',fontWeight:600}}>Localização ao vivo</span></div><LiveMap courierLat={cpos.lat} courierLng={cpos.lng} courierName={order.courier_name} status={order.status}/></>}
       {order.courier_name&&<div style={{margin:'0 14px 10px',padding:'12px 14px',background:'var(--bg2)',borderRadius:'var(--rs)',display:'flex',alignItems:'center',gap:10}}>
-        <div style={{width:36,height:36,borderRadius:'50%',background:'var(--green-l)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>🛵</div>
+        <div style={{width:40,height:40,borderRadius:'50%',background:'var(--green-l)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,position:'relative'}}>
+          <span style={{fontSize:16}}>🛵</span>
+          {order.courier_number&&<span style={{position:'absolute',bottom:-4,right:-4,background:'var(--blue)',color:'white',fontSize:9,fontWeight:800,padding:'1px 4px',borderRadius:8,border:'1.5px solid white'}}>#{order.courier_number}</span>}
+        </div>
         <div style={{flex:1}}>
-          <div style={{fontSize:13,fontWeight:600}}>{order.courier_name}</div>
+          <div style={{fontSize:13,fontWeight:600}}>{order.courier_name}{order.courier_number&&<span style={{fontSize:11,color:'var(--blue)',marginLeft:6,fontWeight:700}}>#{order.courier_number}</span>}</div>
           <div style={{fontSize:11,color:'var(--text2)'}}>{cpos.lat?'📍 Localização ativa':'★ Entregador a caminho'}</div>
         </div>
         {order.courier_phone&&<a href={`https://wa.me/55${order.courier_phone.replace(/\D/g,'')}`} target="_blank" style={{display:'flex',alignItems:'center',gap:5,padding:'7px 12px',background:'#25D366',color:'white',borderRadius:'var(--rs)',textDecoration:'none',fontSize:12,fontWeight:600,flexShrink:0}}>
@@ -599,7 +615,7 @@ function CourierDash({setPage}) {
     }
   };
 
-  const accept=async id=>{const{error}=await db.from('orders').update({courier_id:profile.id,courier_name:profile.name,courier_phone:profile.phone||null,status:'accepted',updated_at:new Date().toISOString()}).eq('id',id).eq('status','waiting');if(error){toast('Pedido já aceito por outro');return;}toast('Pedido aceito! 🛵');loadAll();};
+  const accept=async id=>{const{error}=await db.from('orders').update({courier_id:profile.id,courier_name:profile.name,courier_phone:profile.phone||null,courier_number:profile.courier_number||null,status:'accepted',updated_at:new Date().toISOString()}).eq('id',id).eq('status','waiting');if(error){toast('Pedido já aceito por outro');return;}toast('Pedido aceito! 🛵');loadAll();};
   const advance=async(id,next)=>{await db.from('orders').update({status:next,updated_at:new Date().toISOString()}).eq('id',id);if(next==='done'){toast('Entrega concluída! 🎉');const{data:o}=await db.from('orders').select('*').eq('id',id).single();if(o)await processBonus(o);}else toast('Status atualizado ✓');loadAll();};
   const toggleOnline=async()=>{const next=!online;if(next&&navigator.geolocation){navigator.geolocation.getCurrentPosition(async pos=>{await db.from('users').update({is_online:true,lat:pos.coords.latitude,lng:pos.coords.longitude}).eq('id',profile.id);},()=>db.from('users').update({is_online:true}).eq('id',profile.id));}else await db.from('users').update({is_online:next,...(next?{}:{lat:null,lng:null})}).eq('id',profile.id);setOnline(next);if(!next)setAvailable([]);else loadAvail();};
 
@@ -625,6 +641,10 @@ function CourierDash({setPage}) {
   return <div className="screen">
     <Topbar title={<><span className="rdot"></span>Painel entregador</>} badge={profile?.name?.split(' ')[0]} badgeClass="bd"/>
     <div className="scroll">
+      {profile?.courier_number&&<div style={{margin:'10px 14px 0',padding:'8px 14px',background:'var(--blue-l)',borderRadius:'var(--rs)',display:'flex',alignItems:'center',gap:10}}>
+        <div style={{fontSize:24,fontWeight:800,color:'var(--blue)',letterSpacing:1}}>#{profile.courier_number}</div>
+        <div style={{fontSize:12,color:'var(--blue)'}}>Seu número de identificação</div>
+      </div>}
       <Toggle on={online} onToggle={toggleOnline} label="Disponível para pedidos" sublabel={online?'Você está online':'Você está offline'}/>
       <div className="mrow"><div className="mcard"><div className="mval">{stats.d}</div><div className="mlbl">entregas hoje</div></div><div className="mcard"><div className="mval">R${stats.e}</div><div className="mlbl">ganhos hoje</div></div><div className="mcard"><div className="mval">★ 5.0</div><div className="mlbl">avaliação</div></div></div>
       <div className="divider"/>
@@ -782,66 +802,135 @@ function AdminSettings({setPage}) {
       </div>
 
       {tab==='precos'&&<div style={{padding:'14px'}}>
-        <div style={{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}}>Tabela de preços padrão (usada quando o cliente não tem tabela personalizada).</div>
+        <div style={{fontSize:13,color:'var(--text2)',marginBottom:10,lineHeight:1.5}}>
+          Tabela de preços padrão. Cada linha é uma região/destino de entrega.<br/>
+          <strong>Região</strong> = nome que aparece para o cliente escolher.
+        </div>
+
+        {/* Add new region button */}
+        <button className="btn-sm accept" style={{marginBottom:12,width:'100%',padding:'9px'}} onClick={()=>{
+          setBairros(prev=>[...prev,{key:'NOVA_'+Date.now(),label:'Nova região',cliente:10,entregador:8,_new:true}]);
+        }}>+ Adicionar nova região</button>
+
         <div style={{overflowX:'auto'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
             <thead><tr>
-              <th style={{textAlign:'left',padding:'8px 6px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase'}}>Bairro</th>
-              <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase'}}>Cliente (R$)</th>
-              <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase'}}>Entregador (R$)</th>
-              <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase'}}>Gestora (R$)</th>
+              <th style={{textAlign:'left',padding:'8px 6px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase',minWidth:130}}>Região / Bairro</th>
+              <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase',width:85}}>Cliente R$</th>
+              <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase',width:85}}>Entregador R$</th>
+              <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase',width:75}}>Gestora R$</th>
+              <th style={{width:32,borderBottom:'2px solid var(--border)'}}></th>
             </tr></thead>
             <tbody>{bairros.map((b,i)=>{
               const ml_pool=+(getSetting('multinivel',{total_pool:1}).total_pool)||1;
               const gestora=(b.cliente-b.entregador-ml_pool).toFixed(2);
-              return<tr key={b.key} style={{background:i%2===0?'var(--bg)':'var(--bg2)'}}>
-                <td style={{padding:'7px 6px',fontWeight:500}}>{b.label}</td>
-                <td style={{padding:'7px 6px',textAlign:'center'}}>
-                  <input type="number" value={b.cliente} onChange={e=>{const nb=[...bairros];nb[i]={...nb[i],cliente:+e.target.value};setBairros(nb);}} style={{width:70,textAlign:'center',padding:'4px 6px',fontSize:13}}/>
+              return<tr key={b.key||i} style={{background:i%2===0?'var(--bg)':'var(--bg2)',borderBottom:'1px solid var(--border)'}}>
+                <td style={{padding:'6px 6px'}}>
+                  <input value={b.label} onChange={e=>{const nb=[...bairros];nb[i]={...nb[i],label:e.target.value};setBairros(nb);}}
+                    style={{width:'100%',padding:'5px 7px',fontSize:13,fontWeight:500}} placeholder="Nome da região"/>
                 </td>
-                <td style={{padding:'7px 6px',textAlign:'center'}}>
-                  <input type="number" value={b.entregador} onChange={e=>{const nb=[...bairros];nb[i]={...nb[i],entregador:+e.target.value};setBairros(nb);}} style={{width:70,textAlign:'center',padding:'4px 6px',fontSize:13}}/>
+                <td style={{padding:'6px 4px',textAlign:'center'}}>
+                  <input type="number" value={b.cliente} onChange={e=>{const nb=[...bairros];nb[i]={...nb[i],cliente:+e.target.value};setBairros(nb);}}
+                    style={{width:72,textAlign:'center',padding:'5px 4px',fontSize:13}}/>
                 </td>
-                <td style={{padding:'7px 6px',textAlign:'center',fontWeight:600,color:+gestora>=0?'var(--green)':'var(--red)'}}>{+gestora>=0?gestora:'⚠️'}</td>
+                <td style={{padding:'6px 4px',textAlign:'center'}}>
+                  <input type="number" value={b.entregador} onChange={e=>{const nb=[...bairros];nb[i]={...nb[i],entregador:+e.target.value};setBairros(nb);}}
+                    style={{width:72,textAlign:'center',padding:'5px 4px',fontSize:13}}/>
+                </td>
+                <td style={{padding:'6px 4px',textAlign:'center',fontWeight:700,fontSize:13,color:+gestora>=0?'var(--green)':'var(--red)'}}>
+                  {+gestora>=0?gestora:'⚠️'}
+                </td>
+                <td style={{padding:'6px 4px',textAlign:'center'}}>
+                  <button onClick={()=>setBairros(prev=>prev.filter((_,idx)=>idx!==i))}
+                    style={{background:'none',border:'none',cursor:'pointer',fontSize:16,color:'var(--red)',padding:'2px 4px'}}>×</button>
+                </td>
               </tr>;
             })}</tbody>
           </table>
         </div>
-        <div className="notice ni" style={{marginTop:12}}>A tabela padrão é uma referência visual. Para salvar preços personalizados, use a aba <strong>Clientes</strong>.</div>
+
+        {/* Summary view */}
+        <div style={{marginTop:16,padding:12,background:'var(--bg2)',borderRadius:'var(--rs)'}}>
+          <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Resumo da margem da gestora</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+            {bairros.map((b,i)=>{
+              const ml_pool=+(getSetting('multinivel',{total_pool:1}).total_pool)||1;
+              const g=+(b.cliente-b.entregador-ml_pool).toFixed(2);
+              return<div key={i} style={{padding:'5px 10px',borderRadius:20,fontSize:12,fontWeight:600,background:g>0?'var(--green-l)':g===0?'var(--blue-l)':'var(--red-l)',color:g>0?'var(--green)':g===0?'var(--blue)':'var(--red)'}}>
+                {b.label}: R${g.toFixed(2)}
+              </div>;
+            })}
+          </div>
+        </div>
+
+        <div className="notice ni" style={{marginTop:12,fontSize:12}}>
+          💡 Edite os nomes e valores diretamente na tabela. Use a aba <strong>Clientes</strong> para preços personalizados por cliente.
+        </div>
       </div>}
 
       {tab==='clientes'&&<div style={{padding:'14px'}}>
+        <div style={{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}}>
+          Cada cliente tem sua própria tabela de preços e bairros atendidos.<br/>
+          O cliente vê apenas o que paga. O entregador vê apenas o que recebe. A gestora vê tudo.
+        </div>
         <div className="fgrp" style={{padding:'0 0 12px'}}>
-          <label className="flabel">Selecione o cliente para personalizar preços</label>
+          <label className="flabel">Selecione o cliente</label>
           <select value={selClient} onChange={e=>loadClientPrices(e.target.value)}>
             <option value="">— Selecione um cliente —</option>
             {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        {selClient&&clientBairros.length>0&&<>
-          <div style={{fontSize:12,color:'var(--text2)',marginBottom:10}}>Editando preços de <strong>{clients.find(c=>c.id===selClient)?.name}</strong>. Salve para persistir.</div>
-          <div style={{overflowX:'auto'}}>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
-              <thead><tr>
-                <th style={{textAlign:'left',padding:'8px 6px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase'}}>Bairro</th>
-                <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase'}}>Cliente (R$)</th>
-                <th style={{textAlign:'center',padding:'8px 6px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase'}}>Entregador (R$)</th>
-              </tr></thead>
-              <tbody>{clientBairros.map((b,i)=><tr key={i} style={{background:i%2===0?'var(--bg)':'var(--bg2)'}}>
-                <td style={{padding:'7px 6px',fontWeight:500}}>{b.neighborhood_label||b.label}</td>
-                <td style={{padding:'7px 6px',textAlign:'center'}}>
-                  <input type="number" value={b.client_price||b.cliente} onChange={e=>{const nb=[...clientBairros];nb[i]={...nb[i],client_price:+e.target.value};setClientBairros(nb);}} style={{width:70,textAlign:'center',padding:'4px 6px',fontSize:13}}/>
-                </td>
-                <td style={{padding:'7px 6px',textAlign:'center'}}>
-                  <input type="number" value={b.courier_price||b.entregador} onChange={e=>{const nb=[...clientBairros];nb[i]={...nb[i],courier_price:+e.target.value};setClientBairros(nb);}} style={{width:70,textAlign:'center',padding:'4px 6px',fontSize:13}}/>
-                </td>
-              </tr>)}</tbody>
-            </table>
+        {selClient&&<>
+          <div style={{background:'var(--bg2)',borderRadius:'var(--rs)',padding:'10px 14px',marginBottom:12,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:600}}>{clients.find(c=>c.id===selClient)?.name}</div>
+              <div style={{fontSize:11,color:'var(--text2)'}}>{clientBairros.length} bairro{clientBairros.length!==1?'s':''} configurado{clientBairros.length!==1?'s':''}</div>
+            </div>
+            <button className="btn-sm accept" onClick={()=>{setClientBairros(prev=>[...prev,{neighborhood_key:'NOVO_'+Date.now(),neighborhood_label:'Nova região',client_price:10,courier_price:8,_new:true}]);}}>+ Adicionar bairro</button>
           </div>
-          <button className="btn btn-blue" style={{marginTop:12}} onClick={saveClientPrices} disabled={saving}>{saving?'Salvando...':'Salvar preços deste cliente'}</button>
+          {clientBairros.length===0
+            ?<div className="notice ni">Nenhum bairro configurado. Clique em "+ Adicionar bairro" para começar.</div>
+            :<div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+                <thead><tr style={{background:'var(--bg2)'}}>
+                  <th style={{textAlign:'left',padding:'9px 8px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--text2)',textTransform:'uppercase',minWidth:130}}>Região / Bairro</th>
+                  <th style={{textAlign:'center',padding:'9px 6px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--blue)',textTransform:'uppercase',width:85}}>Cliente paga</th>
+                  <th style={{textAlign:'center',padding:'9px 6px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--green)',textTransform:'uppercase',width:85}}>Entregador recebe</th>
+                  <th style={{textAlign:'center',padding:'9px 6px',borderBottom:'2px solid var(--border)',fontSize:11,color:'var(--amber)',textTransform:'uppercase',width:75}}>Gestora</th>
+                  <th style={{width:32,borderBottom:'2px solid var(--border)'}}></th>
+                </tr></thead>
+                <tbody>{clientBairros.map((b,i)=>{
+                  const pool=+(getSetting('multinivel',{total_pool:1}).total_pool)||1;
+                  const cp=+(b.client_price||b.cliente||0);
+                  const crp=+(b.courier_price||b.entregador||0);
+                  const gestora=+(cp-crp-pool).toFixed(2);
+                  return<tr key={i} style={{borderBottom:'1px solid var(--border)',background:i%2===0?'var(--bg)':'var(--bg2)'}}>
+                    <td style={{padding:'6px'}}><input value={b.neighborhood_label||b.label||''} onChange={e=>{const nb=[...clientBairros];nb[i]={...nb[i],neighborhood_label:e.target.value};setClientBairros(nb);}} style={{width:'100%',padding:'5px 7px',fontSize:13,fontWeight:500}} placeholder="Nome do bairro/região"/></td>
+                    <td style={{padding:'6px 4px',textAlign:'center'}}><input type="number" step="0.50" value={cp} onChange={e=>{const nb=[...clientBairros];nb[i]={...nb[i],client_price:+e.target.value};setClientBairros(nb);}} style={{width:72,textAlign:'center',padding:'5px 4px',fontSize:13,borderColor:'var(--blue-m)'}}/></td>
+                    <td style={{padding:'6px 4px',textAlign:'center'}}><input type="number" step="0.50" value={crp} onChange={e=>{const nb=[...clientBairros];nb[i]={...nb[i],courier_price:+e.target.value};setClientBairros(nb);}} style={{width:72,textAlign:'center',padding:'5px 4px',fontSize:13,borderColor:'var(--green-m)'}}/></td>
+                    <td style={{padding:'6px 4px',textAlign:'center',fontWeight:700,fontSize:13,color:gestora>0?'var(--amber)':gestora===0?'var(--text2)':'var(--red)'}}>{gestora>=0?`R$${gestora.toFixed(2)}`:'⚠️'}</td>
+                    <td style={{padding:'6px 4px',textAlign:'center'}}><button onClick={()=>setClientBairros(prev=>prev.filter((_,idx)=>idx!==i))} style={{background:'none',border:'none',cursor:'pointer',fontSize:16,color:'var(--red)',padding:'2px 4px'}}>×</button></td>
+                  </tr>;
+                })}</tbody>
+                <tfoot><tr style={{background:'var(--bg2)'}}>
+                  <td style={{padding:'8px',fontSize:12,fontWeight:600,color:'var(--text2)'}}>TOTAIS</td>
+                  <td style={{padding:'8px',textAlign:'center',fontSize:12,fontWeight:700,color:'var(--blue)'}}>R${clientBairros.reduce((a,b)=>a+(+(b.client_price||b.cliente||0)),0).toFixed(2)}</td>
+                  <td style={{padding:'8px',textAlign:'center',fontSize:12,fontWeight:700,color:'var(--green)'}}>R${clientBairros.reduce((a,b)=>a+(+(b.courier_price||b.entregador||0)),0).toFixed(2)}</td>
+                  <td style={{padding:'8px',textAlign:'center',fontSize:12,fontWeight:700,color:'var(--amber)'}}>R${clientBairros.reduce((a,b)=>{const pool=+(getSetting('multinivel',{total_pool:1}).total_pool)||1;const g=+(b.client_price||b.cliente||0)-(+(b.courier_price||b.entregador||0))-pool;return a+(g>0?g:0);},0).toFixed(2)}</td>
+                  <td></td>
+                </tr></tfoot>
+              </table>
+            </div>
+          }
+          {clientBairros.length>0&&<div style={{display:'flex',gap:8,margin:'12px 0',flexWrap:'wrap'}}>
+            <div className="mcard" style={{flex:1,minWidth:80}}><div className="mval" style={{fontSize:15,color:'var(--blue)'}}>R${clientBairros.length?(clientBairros.reduce((a,b)=>a+(+(b.client_price||b.cliente||0)),0)/clientBairros.length).toFixed(2):'0'}</div><div className="mlbl">ticket médio cliente</div></div>
+            <div className="mcard" style={{flex:1,minWidth:80}}><div className="mval" style={{fontSize:15,color:'var(--green)'}}>R${clientBairros.length?(clientBairros.reduce((a,b)=>a+(+(b.courier_price||b.entregador||0)),0)/clientBairros.length).toFixed(2):'0'}</div><div className="mlbl">ticket médio entregador</div></div>
+            <div className="mcard" style={{flex:1,minWidth:80}}><div className="mval" style={{fontSize:15,color:'var(--amber)'}}>R${(()=>{const pool=+(getSetting('multinivel',{total_pool:1}).total_pool)||1;const t=clientBairros.reduce((a,b)=>{const g=+(b.client_price||b.cliente||0)-(+(b.courier_price||b.entregador||0))-pool;return a+(g>0?g:0);},0);return clientBairros.length?(t/clientBairros.length).toFixed(2):'0';})()}</div><div className="mlbl">margem média gestora</div></div>
+          </div>}
+          <button className="btn btn-blue" style={{marginTop:8}} onClick={saveClientPrices} disabled={saving}>{saving?'Salvando...':'💾 Salvar tabela de preços'}</button>
+          <div style={{fontSize:11,color:'var(--text2)',marginTop:8,lineHeight:1.5}}>⚠️ O cliente vê apenas o valor da entrega. O entregador vê apenas o que recebe. Só o admin vê os 3 valores.</div>
         </>}
       </div>}
-
       {tab==='redes'&&<div style={{padding:'14px'}}>
         <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:10}}>Criar nova rede</div>
         <div style={{display:'flex',gap:8,marginBottom:16}}>
@@ -892,6 +981,8 @@ function AdminShell({children,page,setPage}) {
     <div className="tabbar">
       <button className={`tab-item ${page==='admin'?'active':''}`} onClick={()=>setPage('admin')}><span className="tab-icon">📊</span><span>Início</span></button>
       <button className={`tab-item ${page==='admin-orders'?'active':''}`} onClick={()=>setPage('admin-orders')}><span className="tab-icon">📋</span><span>Pedidos</span></button>
+      <button className={`tab-item ${page==='admin-new'?'active':''}`} onClick={()=>setPage('admin-new')}><span className="tab-icon">➕</span><span>Novo</span></button>
+      <button className={`tab-item ${page==='admin-couriers'?'active':''}`} onClick={()=>setPage('admin-couriers')}><span className="tab-icon">🛵</span><span>Equipe</span></button>
       <button className={`tab-item ${page==='admin-map'?'active':''}`} onClick={()=>setPage('admin-map')}><span className="tab-icon">🗺️</span><span>Mapa</span></button>
       <button className={`tab-item ${page==='admin-fin'?'active':''}`} onClick={()=>setPage('admin-fin')}><span className="tab-icon">💰</span><span>Finanças</span></button>
       <button className={`tab-item ${page==='admin-settings'?'active':''}`} onClick={()=>setPage('admin-settings')}><span className="tab-icon">⚙️</span><span>Config</span></button>
@@ -900,6 +991,322 @@ function AdminShell({children,page,setPage}) {
 }
 
 // ===== ADMIN MAP =====
+
+// ===== ADMIN COURIERS =====
+function AdminCouriers({setPage}) {
+  const toast = useToast();
+  const [couriers, setCouriers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all'); // all | online | offline | nivel0 | nivel1 | nivel2
+  const [expandId, setExpandId] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [editData, setEditData] = useState({});
+
+  const [networks, setNetworks] = useState([]);
+  const load = useCallback(async () => {
+    const [cr, nw] = await Promise.all([
+      db.from('users').select('id,name,email,phone,vehicle,plate,is_online,can_refer,referral_code,referred_by,network_id,courier_number,forced_level,created_at').eq('role','courier').order('name'),
+      db.from('networks').select('*').order('name')
+    ]);
+    setCouriers(cr.data || []);
+    setNetworks(nw.data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Calcula nível — respeita forced_level se definido
+  const getLevel = (courier) => {
+    if (courier.forced_level !== null && courier.forced_level !== undefined) return courier.forced_level;
+    if (!courier.referred_by) return 0;
+    const referrer = couriers.find(c => c.id === courier.referred_by);
+    if (!referrer || !referrer.referred_by) return 1;
+    return 2;
+  };
+  const isLevelForced = (courier) => courier.forced_level !== null && courier.forced_level !== undefined;
+
+  // Busca nome de quem indicou
+  const getReferrerName = (courier) => {
+    if (!courier.referred_by) return null;
+    return couriers.find(c => c.id === courier.referred_by)?.name || 'Desconhecido';
+  };
+
+  // Conta quantos este entregador indicou
+  const getNetworkCount = (courierId) => couriers.filter(c => c.referred_by === courierId).length;
+
+  // Filtra e busca
+  const filtered = couriers.filter(c => {
+    const matchSearch = !search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.phone||'').includes(search);
+    const level = getLevel(c);
+    const matchFilter =
+      filter === 'all' ? true :
+      filter === 'online' ? c.is_online :
+      filter === 'offline' ? !c.is_online :
+      filter === 'nivel0' ? level === 0 :
+      filter === 'nivel1' ? level === 1 :
+      filter === 'nivel2' ? level === 2 : true;
+    return matchSearch && matchFilter;
+  });
+
+  const levelColor = { 0: 'var(--amber)', 1: 'var(--blue)', 2: 'var(--green)' };
+  const levelBg    = { 0: 'var(--amber-l)', 1: 'var(--blue-l)', 2: 'var(--green-l)' };
+
+  const toggleReferral = async (id, enable, name, code) => {
+    const newCode = enable ? (code || genCode(name)) : undefined;
+    await db.from('users').update({ can_refer: enable, ...(enable && newCode && { referral_code: newCode }) }).eq('id', id);
+    toast(enable ? `${name} pode indicar ✓` : 'Permissão revogada');
+    load();
+  };
+
+  const saveEdit = async () => {
+    await db.from('users').update({
+      name: editData.name,
+      phone: editData.phone,
+      vehicle: editData.vehicle,
+      plate: editData.plate,
+    }).eq('id', editId);
+    toast('Dados atualizados ✓');
+    setEditId(null);
+    load();
+  };
+
+  const assignNumber = async (id, name) => {
+    const num = await genCourierNumber();
+    await db.from('users').update({ courier_number: num }).eq('id', id);
+    toast(`Número #${num} atribuído a ${name} ✓`);
+    load();
+  };
+
+  const forceLevel = async (id, name, level) => {
+    const val = level === '' ? null : +level;
+    await db.from('users').update({ forced_level: val }).eq('id', id);
+    toast(val !== null ? `Nível ${val} definido para ${name} ✓` : `Nível automático restaurado para ${name} ✓`);
+    load();
+  };
+
+  const moveCourier = async (courierId, courierName, newNetworkId, withTeam) => {
+    if (withTeam) {
+      // Move o entregador e toda a rede abaixo dele
+      const team = couriers.filter(c => c.referred_by === courierId);
+      const ids = [courierId, ...team.map(c => c.id)];
+      await db.from('users').update({ network_id: newNetworkId||null }).in('id', ids);
+      toast(`${courierName} e ${team.length} indicado(s) movidos ✓`);
+    } else {
+      // Move só o entregador
+      await db.from('users').update({ network_id: newNetworkId||null }).eq('id', courierId);
+      toast(`${courierName} movido ✓`);
+    }
+    load();
+  };
+
+  // Modal state for move
+  const [moveModal, setMoveModal] = useState(null); // {id, name, networkCount}
+  const [moveWithTeam, setMoveWithTeam] = useState(false);
+  const [moveTarget, setMoveTarget] = useState('');
+
+  const deleteUser = async (id, name) => {
+    if (!confirm(`Remover entregador ${name}? Esta ação não pode ser desfeita.`)) return;
+    await db.from('users').delete().eq('id', id);
+    toast(`${name} removido`);
+    load();
+  };
+
+  const levelCounts = {
+    total: couriers.length,
+    online: couriers.filter(c=>c.is_online).length,
+    nivel0: couriers.filter(c=>getLevel(c)===0).length,
+    nivel1: couriers.filter(c=>getLevel(c)===1).length,
+    nivel2: couriers.filter(c=>getLevel(c)===2).length,
+  };
+
+  const confirmMove = async () => {
+    if (!moveModal) return;
+    await moveCourier(moveModal.id, moveModal.name, moveTarget, moveWithTeam);
+    setMoveModal(null); setMoveTarget(''); setMoveWithTeam(false);
+  };
+
+  return <AdminShell page="admin-couriers" setPage={setPage}>
+    <Topbar title="Equipe de entregadores" badge="Admin" badgeClass="ba">
+      <button className="btn-sm" onClick={load} style={{marginLeft:'auto',fontSize:11}}>↻</button>
+    </Topbar>
+
+    {/* Move modal */}
+    {moveModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div style={{background:'var(--bg)',borderRadius:'var(--r)',padding:20,width:'100%',maxWidth:360,boxShadow:'0 8px 32px rgba(0,0,0,.2)'}}>
+        <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Mover entregador</div>
+        <div style={{fontSize:13,color:'var(--text2)',marginBottom:14}}>Movendo: <strong>{moveModal.name}</strong></div>
+        <div style={{marginBottom:12}}>
+          <label className="flabel">Mover para a equipe</label>
+          <select value={moveTarget} onChange={e=>setMoveTarget(e.target.value)}>
+            <option value="">— Sem equipe —</option>
+            {networks.map(n=><option key={n.id} value={n.id}>{n.name}</option>)}
+          </select>
+        </div>
+        {moveModal.networkCount>0&&<div style={{marginBottom:14,padding:12,background:'var(--blue-l)',borderRadius:'var(--rs)'}}>
+          <div style={{fontSize:13,fontWeight:600,color:'var(--blue)',marginBottom:8}}>Este entregador tem {moveModal.networkCount} indicado(s)</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}>
+              <input type="radio" checked={!moveWithTeam} onChange={()=>setMoveWithTeam(false)}/>
+              <div>
+                <div style={{fontWeight:600}}>Mover só ele</div>
+                <div style={{fontSize:11,color:'var(--text2)'}}>A rede dele fica na equipe atual</div>
+              </div>
+            </label>
+            <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}>
+              <input type="radio" checked={moveWithTeam} onChange={()=>setMoveWithTeam(true)}/>
+              <div>
+                <div style={{fontWeight:600}}>Mover ele + toda a rede ({moveModal.networkCount} indicados)</div>
+                <div style={{fontSize:11,color:'var(--text2)'}}>Todos vão para a nova equipe</div>
+              </div>
+            </label>
+          </div>
+        </div>}
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn-sm progress" style={{flex:1,padding:10}} onClick={confirmMove}>Confirmar</button>
+          <button className="btn-sm" style={{flex:1,padding:10}} onClick={()=>setMoveModal(null)}>Cancelar</button>
+        </div>
+      </div>
+    </div>}
+    <div className="scroll">
+
+      {/* KPIs */}
+      <div style={{display:'flex',gap:6,padding:'10px 14px 8px',overflowX:'auto'}}>
+        {[
+          {label:'Total',val:levelCounts.total,color:'var(--text)'},
+          {label:'Online',val:levelCounts.online,color:'var(--green)'},
+          {label:'Nível 0',val:levelCounts.nivel0,color:'var(--amber)'},
+          {label:'Nível 1',val:levelCounts.nivel1,color:'var(--blue)'},
+          {label:'Nível 2',val:levelCounts.nivel2,color:'var(--green)'},
+        ].map(k=><div key={k.label} className="mcard" style={{flex:'0 0 auto',minWidth:70,padding:'8px 10px'}}>
+          <div className="mval" style={{fontSize:18,color:k.color}}>{k.val}</div>
+          <div className="mlbl">{k.label}</div>
+        </div>)}
+      </div>
+
+      {/* Search + filter */}
+      <div style={{padding:'0 14px 10px'}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por nome ou telefone..." style={{marginBottom:8}}/>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[['all','Todos'],['online','Online'],['offline','Offline'],['nivel0','Nível 0'],['nivel1','Nível 1'],['nivel2','Nível 2']].map(([v,l])=>
+            <button key={v} onClick={()=>setFilter(v)} style={{padding:'5px 12px',borderRadius:20,border:'1px solid var(--border)',background:filter===v?'var(--blue)':'var(--bg)',color:filter===v?'white':'var(--text2)',fontSize:12,fontWeight:filter===v?600:400,cursor:'pointer',fontFamily:'var(--font)'}}>
+              {l}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Courier list */}
+      {loading ? <Loading/> : filtered.length === 0
+        ? <Empty icon="🛵" text="Nenhum entregador encontrado."/>
+        : filtered.map(c => {
+          const level = getLevel(c);
+          const referrerName = getReferrerName(c);
+          const networkCount = getNetworkCount(c.id);
+          const isExpanded = expandId === c.id;
+          const isEditing = editId === c.id;
+
+          return <div key={c.id} className="ocard" style={{margin:'0 14px 8px'}}>
+            {/* Header */}
+            <div style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:8}}>
+              <div style={{width:40,height:40,borderRadius:'50%',background:c.is_online?'var(--green-l)':'var(--bg2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,border:`2px solid ${c.is_online?'var(--green-m)':'var(--border)'}`}}>🛵</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                  {c.courier_number&&<span style={{fontSize:13,fontWeight:800,color:'var(--blue)',background:'var(--blue-l)',padding:'2px 8px',borderRadius:6,letterSpacing:0.5}}>#{c.courier_number}</span>}
+                  <span style={{fontSize:14,fontWeight:700}}>{c.name}</span>
+                  <span style={{fontSize:11,padding:'2px 8px',borderRadius:20,fontWeight:700,background:levelBg[level],color:levelColor[level]}}>Nível {level}</span>
+                  {c.is_online && <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,background:'var(--green-l)',color:'var(--green)',fontWeight:600}}>🟢 Online</span>}
+                </div>
+                <div style={{fontSize:11,color:'var(--text2)',marginTop:3}}>
+                  {c.vehicle||'Moto'}{c.plate?` · ${c.plate}`:''}{c.phone?` · 📱 ${c.phone}`:''}
+                </div>
+                {referrerName && <div style={{fontSize:11,color:'var(--blue)',marginTop:2}}>👆 Indicado por: {referrerName}</div>}
+                {networkCount > 0 && <div style={{fontSize:11,color:'var(--green)',marginTop:2}}>👥 Indicou {networkCount} entregador{networkCount!==1?'es':''}</div>}
+                {c.network_id && <div style={{fontSize:11,color:'var(--amber)',marginTop:2}}>🌐 {networks.find(n=>n.id===c.network_id)?.name||'Equipe desconhecida'}</div>}
+                {isLevelForced(c) && <div style={{fontSize:10,color:'var(--amber)',marginTop:1}}>⚠️ Nível {c.forced_level} (definido manualmente)</div>}
+              </div>
+              <button onClick={()=>setExpandId(isExpanded?null:c.id)} style={{background:'none',border:'none',fontSize:18,cursor:'pointer',color:'var(--text2)',padding:'2px 4px',flexShrink:0}}>
+                {isExpanded?'▲':'▼'}
+              </button>
+            </div>
+
+            {/* Quick actions */}
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {c.phone && <a href={`https://wa.me/55${c.phone.replace(/\D/g,'')}`} target="_blank" style={{display:'flex',alignItems:'center',gap:4,padding:'5px 10px',background:'#25D366',color:'white',borderRadius:6,textDecoration:'none',fontSize:12,fontWeight:600}}>💬 Zap</a>}
+              {!c.courier_number&&<button className="btn-sm" style={{background:'var(--blue-l)',borderColor:'var(--blue-m)',color:'var(--blue)'}} onClick={()=>assignNumber(c.id,c.name)}>🔢 Número</button>}
+              <button className="btn-sm" style={{background:'var(--amber-l)',borderColor:'var(--amber)',color:'var(--amber)'}} onClick={()=>setMoveModal({id:c.id,name:c.name,networkCount:getNetworkCount(c.id)})}>🔀 Mover</button>
+              {!c.can_refer
+                ? <button className="btn-sm accept" onClick={()=>toggleReferral(c.id,true,c.name,c.referral_code)}>✓ Indicar</button>
+                : <button className="btn-sm" style={{background:'var(--green-l)',borderColor:'var(--green-m)',color:'var(--green)'}} onClick={()=>{}}>✓ Pode indicar</button>
+              }
+              <button className="btn-sm" onClick={()=>{setEditId(c.id);setEditData({name:c.name,phone:c.phone||'',vehicle:c.vehicle||'Moto',plate:c.plate||''});setExpandId(c.id);}}>✏️ Editar</button>
+            </div>
+
+            {/* Expanded details */}
+            {isExpanded && <div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:12}}>
+              {isEditing ? <>
+                <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:10}}>Editando dados</div>
+                <div style={{marginBottom:8}}><label className="flabel">Nome</label><input value={editData.name} onChange={e=>setEditData({...editData,name:e.target.value})}/></div>
+                <div style={{marginBottom:8}}><label className="flabel">WhatsApp</label><input value={editData.phone} onChange={e=>setEditData({...editData,phone:e.target.value})} placeholder="(21) 99999-0000"/></div>
+                <div style={{display:'flex',gap:8,marginBottom:12}}>
+                  <div style={{flex:1}}><label className="flabel">Veículo</label><select value={editData.vehicle} onChange={e=>setEditData({...editData,vehicle:e.target.value})}><option>Moto</option><option>Bicicleta</option><option>Carro</option></select></div>
+                  <div style={{flex:1}}><label className="flabel">Placa</label><input value={editData.plate} onChange={e=>setEditData({...editData,plate:e.target.value})} placeholder="ABC-1234"/></div>
+                </div>
+                <div style={{display:'flex',gap:8}}>
+                  <button className="btn-sm progress" style={{flex:1,padding:'8px'}} onClick={saveEdit}>Salvar</button>
+                  <button className="btn-sm" style={{flex:1,padding:'8px'}} onClick={()=>setEditId(null)}>Cancelar</button>
+                </div>
+              </> : <>
+                <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Detalhes</div>
+                <div style={{fontSize:12,color:'var(--text2)',lineHeight:2}}>
+                  <div>📧 {c.email}</div>
+                  <div>📅 Cadastrado em {fmtDate(c.created_at)}</div>
+                  {c.referral_code && <div>🔗 Código de indicação: <strong style={{color:'var(--blue)'}}>{c.referral_code}</strong></div>}
+                  {c.can_refer && <div>🔗 Link: <span style={{color:'var(--blue)',fontSize:11,wordBreak:'break-all'}}>{window.location.origin+window.location.pathname}?role=courier&ref={c.referral_code}</span></div>}
+                </div>
+
+                {/* Rede do entregador */}
+                {networkCount > 0 && <>
+                  <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',margin:'10px 0 6px'}}>Sua rede</div>
+                  {couriers.filter(x=>x.referred_by===c.id).map(sub=><div key={sub.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+                    <span style={{fontSize:13}}>🛵</span>
+                    <span style={{flex:1,fontSize:12,fontWeight:500}}>{sub.name}</span>
+                    <span style={{fontSize:11,padding:'2px 7px',borderRadius:20,fontWeight:600,background:levelBg[getLevel(sub)],color:levelColor[getLevel(sub)]}}>Nível {getLevel(sub)}</span>
+                    {sub.is_online && <span style={{fontSize:10,color:'var(--green)'}}>🟢</span>}
+                  </div>)}
+                </>}
+
+                {/* Force level */}
+                <div style={{marginTop:12,padding:12,background:'var(--bg2)',borderRadius:'var(--rs)'}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Definir nível manualmente</div>
+                  <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                    <select
+                      value={isLevelForced(c)?String(c.forced_level):''}
+                      onChange={e=>forceLevel(c.id,c.name,e.target.value)}
+                      style={{flex:1,fontSize:13,padding:'6px 10px'}}
+                    >
+                      <option value="">Automático (calculado pela rede)</option>
+                      <option value="0">Nível 0 — topo da rede</option>
+                      <option value="1">Nível 1 — indicado pelo nível 0</option>
+                      <option value="2">Nível 2 — indicado pelo nível 1</option>
+                    </select>
+                    {isLevelForced(c)&&<span style={{fontSize:11,padding:'3px 8px',borderRadius:20,background:'var(--amber-l)',color:'var(--amber)',fontWeight:600,whiteSpace:'nowrap'}}>⚠️ Forçado</span>}
+                  </div>
+                  {isLevelForced(c)&&<div style={{fontSize:11,color:'var(--text2)',marginTop:6}}>Nível calculado automaticamente seria: {(()=>{const tmp={...c,forced_level:null};if(!tmp.referred_by)return 0;const ref=couriers.find(x=>x.id===tmp.referred_by);return(!ref||!ref.referred_by)?1:2;})()}</div>}
+                </div>
+                <div style={{marginTop:10}}>
+                  {c.can_refer && <button className="btn-sm danger" style={{marginRight:6}} onClick={()=>toggleReferral(c.id,false,c.name,c.referral_code)}>Revogar permissão de indicar</button>}
+                  <button className="btn-sm danger" onClick={()=>deleteUser(c.id,c.name)}>🗑 Remover</button>
+                </div>
+              </>}
+            </div>}
+          </div>;
+        })
+      }
+    </div>
+  </AdminShell>;
+}
+
 function AdminMap({setPage}) {
   const [couriers, setCouriers] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -1028,30 +1435,122 @@ function AdminOrders({setPage,setAllocId}) {
 
 function AdminNewOrder({setPage}) {
   const {profile}=useAuth(); const toast=useToast();
-  const [cName,setCName]=useState(''),[pickup,setPickup]=useState(''),[pickupC,setPickupC]=useState('');
-  const [bairro,setBairro]=useState(''),[delivery,setDelivery]=useState(''),[deliveryC,setDeliveryC]=useState('');
-  const [item,setItem]=useState(''),[pay,setPay]=useState('App'),[courierSel,setCourierSel]=useState('');
-  const [couriers,setCouriers]=useState([]),[loading,setLoading]=useState(false);
-  useEffect(()=>{db.from('users').select('id,name,is_online,vehicle').eq('role','courier').order('is_online',{ascending:false}).order('name').then(({data})=>setCouriers(data||[]));},[]);
-  const prices=bairro?BAIRRO_PRECO[bairro]:null;
-  const submit=async()=>{
-    if(!cName){toast('Informe o nome do cliente');return;}if(!bairro){toast('Selecione o bairro');return;}if(!item){toast('Descreva o pacote');return;}
-    setLoading(true);const[cId,cNm]=courierSel?courierSel.split('|'):[null,null];
-    const sel=document.getElementById('adm-bairro');const label=sel?sel.options[sel.selectedIndex]?.text:bairro;
-    const{error}=await db.from('orders').insert({client_id:profile.id,client_name:cName,pickup_addr:pickup||'Icaraí (a confirmar)',pickup_comp:pickupC,delivery_addr:(delivery||label)+(delivery&&label?` — ${label}`:''),delivery_comp:deliveryC,neighborhood:bairro,item_desc:item,pay_method:pay,price:prices.cliente,courier_price:prices.entregador,status:cId?'accepted':'waiting',...(cId&&{courier_id:cId,courier_name:cNm})});
-    setLoading(false);if(error){toast('Erro ao criar pedido');return;}toast(cId?`Pedido criado e alocado para ${cNm}! ✓`:'Pedido criado! 🎉');setPage('admin-orders');
+  const [clients,setClients]=useState([]);
+  const [selClient,setSelClient]=useState('');
+  const [clientObj,setClientObj]=useState(null);
+  const [pickup,setPickup]=useState('');
+  const [bairro,setBairro]=useState('');
+  const [delivery,setDelivery]=useState('');
+  const [item,setItem]=useState('');
+  const [pay,setPay]=useState('App');
+  const [courierSel,setCourierSel]=useState('');
+  const [couriers,setCouriers]=useState([]);
+  const [priceItems,setPriceItems]=useState([]);
+  const [loading,setLoading]=useState(false);
+
+  useEffect(()=>{
+    db.from('users').select('id,name,is_online,vehicle').eq('role','courier').order('is_online',{ascending:false}).order('name').then(({data})=>setCouriers(data||[]));
+    db.from('users').select('id,name,address,phone,price_table_id,network_id').eq('role','client').order('name').then(({data})=>setClients(data||[]));
+  },[]);
+
+  const onSelectClient=async(id)=>{
+    setSelClient(id);
+    if(!id){setClientObj(null);setPickup('');setPriceItems([]);return;}
+    const cl=clients.find(c=>c.id===id);
+    setClientObj(cl);
+    // Preenche endereço de coleta default da loja
+    setPickup(cl?.address||'');
+    // Carrega tabela de preços do cliente
+    const items=await getPriceTableForClient(id);
+    setPriceItems(items);
   };
+
+  const bairroLabel=bairro?BAIRROS.find(([v])=>v===bairro)?.[1]||bairro:'';
+  const bairroPrice=priceItems.find(p=>(p.neighborhood_key||p.key)===bairro);
+  const prices=bairroPrice
+    ?{cliente:+(bairroPrice.client_price||bairroPrice.cliente),entregador:+(bairroPrice.courier_price||bairroPrice.entregador)}
+    :(bairro?BAIRRO_PRECO[bairro]:null);
+  const ml=getSetting('multinivel',{total_pool:1.00});
+  const gestora=prices?+(prices.cliente-prices.entregador-(+ml.total_pool||1)).toFixed(2):0;
+
+  const submit=async()=>{
+    if(!selClient){toast('Selecione o cliente');return;}
+    if(!bairro){toast('Selecione o bairro de entrega');return;}
+    if(!item){toast('Descreva o pacote');return;}
+    if(!prices){toast('Preço não encontrado para este bairro');return;}
+    setLoading(true);
+    const[cId,cNm]=courierSel?courierSel.split('|'):[null,null];
+    const{error}=await db.from('orders').insert({
+      client_id:selClient,
+      client_name:clientObj?.name||'',
+      pickup_addr:pickup||(clientObj?.address||'A confirmar'),
+      delivery_addr:(delivery?delivery+' — ':'')+bairroLabel,
+      neighborhood:bairro,item_desc:item,pay_method:pay,
+      price:prices.cliente,courier_price:prices.entregador,
+      gestora_amount:Math.max(0,gestora),
+      status:cId?'accepted':'waiting',
+      ...(cId&&{courier_id:cId,courier_name:cNm,courier_phone:couriers.find(c=>c.id===cId)?.phone||null})
+    });
+    setLoading(false);
+    if(error){toast('Erro ao criar pedido');return;}
+    toast(cId?`Pedido criado e alocado para ${cNm}! ✓`:'Pedido criado! 🎉');
+    setPage('admin-orders');
+  };
+
   return <AdminShell page="admin-new" setPage={setPage}>
-    <Topbar title="Criar pedido" badge="Admin" badgeClass="ba"/>
+    <Topbar title="Novo pedido" badge="Admin" badgeClass="ba"/>
     <div className="scroll">
-      <div className="stitle">Cliente</div><div className="fgrp"><label className="flabel">Nome do cliente</label><input value={cName} onChange={e=>setCName(e.target.value)} placeholder="Nome do cliente"/></div>
-      <div className="stitle">Coleta</div><div className="fgrp"><label className="flabel">Endereço</label><input value={pickup} onChange={e=>setPickup(e.target.value)} placeholder="Rua, número (opcional)"/></div><div className="fgrp"><label className="flabel">Complemento</label><input value={pickupC} onChange={e=>setPickupC(e.target.value)} placeholder="Opcional"/></div>
-      <div className="stitle">Entrega</div><div className="fgrp"><label className="flabel">Bairro</label><BairroSelect id="adm-bairro" value={bairro} onChange={setBairro}/></div><div className="fgrp"><label className="flabel">Endereço</label><input value={delivery} onChange={e=>setDelivery(e.target.value)} placeholder="Rua, número (opcional)"/></div><div className="fgrp"><label className="flabel">Complemento</label><input value={deliveryC} onChange={e=>setDeliveryC(e.target.value)} placeholder="Opcional"/></div>
-      <div className="stitle">Pacote</div><div className="fgrp"><label className="flabel">O que será coletado?</label><textarea value={item} onChange={e=>setItem(e.target.value)} placeholder="Ex: 2 marmitas..."/></div>
+
+      <div className="stitle">👤 Cliente (loja)</div>
+      <div className="fgrp">
+        <label className="flabel">Selecione o cliente</label>
+        <select value={selClient} onChange={e=>onSelectClient(e.target.value)}>
+          <option value="">— Selecione um cliente —</option>
+          {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </div>
+
+      <div className="stitle">📍 Local de coleta</div>
+      <div className="fgrp">
+        <label className="flabel">Endereço completo da loja / coleta</label>
+        <input value={pickup} onChange={e=>setPickup(e.target.value)} placeholder="Rua, número, complemento..."/>
+        {clientObj?.address&&pickup!==clientObj.address&&
+          <button onClick={()=>setPickup(clientObj.address)} style={{marginTop:5,fontSize:12,color:'var(--blue)',background:'none',border:'none',cursor:'pointer',padding:0,textDecoration:'underline'}}>↩ Restaurar endereço da loja</button>}
+      </div>
+
+      <div className="stitle">🏠 Local de entrega (destino)</div>
+      <div className="fgrp">
+        <label className="flabel">Bairro de entrega</label>
+        <BairroSelect id="adm-bairro" value={bairro} onChange={setBairro}/>
+      </div>
+      <div className="fgrp">
+        <label className="flabel">Endereço completo de entrega</label>
+        <input value={delivery} onChange={e=>setDelivery(e.target.value)} placeholder="Rua, número, complemento, referência..."/>
+      </div>
+
+      {prices&&<div className="pbox">
+        <div className="prow"><span>Bairro</span><span style={{fontWeight:700,color:'var(--text)'}}>{bairroLabel}</span></div>
+        <div className="prow"><span>Valor cliente</span><span style={{color:'var(--blue)',fontWeight:700}}>{fmtMoney(prices.cliente)}</span></div>
+        <div className="prow"><span>Valor entregador</span><span style={{color:'var(--green)',fontWeight:700}}>{fmtMoney(prices.entregador)}</span></div>
+        <div className="prow"><span>Pool multinível</span><span style={{color:'var(--text2)'}}>- {fmtMoney(+ml.total_pool||1)}</span></div>
+        <div className="ptotal"><span>Gestora</span><span style={{color:gestora>=0?'var(--amber)':'var(--red)'}}>{gestora>=0?fmtMoney(gestora):'⚠️ Negativo!'}</span></div>
+      </div>}
+
+      <div className="stitle">📦 Pacote</div>
+      <div className="fgrp"><label className="flabel">O que será coletado?</label><textarea value={item} onChange={e=>setItem(e.target.value)} placeholder="Ex: 2 marmitas, 1 envelope A4..."/></div>
       <div className="fgrp"><label className="flabel">Pagamento</label><select value={pay} onChange={e=>setPay(e.target.value)}><option>App</option><option>Pix</option><option>Dinheiro</option></select></div>
-      {prices&&<div className="pbox"><div className="prow"><span>Valor cliente</span><span style={{color:'var(--blue)',fontWeight:700}}>{fmtMoney(prices.cliente)}</span></div><div className="prow"><span>Valor entregador</span><span style={{color:'var(--green)',fontWeight:700}}>{fmtMoney(prices.entregador)}</span></div><div className="ptotal"><span>Margem plataforma</span><span style={{color:'var(--amber)'}}>{fmtMoney(prices.cliente-prices.entregador)}</span></div></div>}
-      <div className="stitle">Alocar entregador (opcional)</div><div className="fgrp"><select value={courierSel} onChange={e=>setCourierSel(e.target.value)}><option value="">— Deixar em aberto —</option>{couriers.map(c=><option key={c.id} value={`${c.id}|${c.name}`}>{c.is_online?'🟢':'⚪'} {c.name} — {c.vehicle||'Moto'}</option>)}</select></div>
-      <button className="btn btn-blue" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading}>{loading?'Criando...':'Criar pedido'}</button>
+
+      <div className="stitle">🛵 Alocar entregador (opcional)</div>
+      <div className="fgrp">
+        <select value={courierSel} onChange={e=>setCourierSel(e.target.value)}>
+          <option value="">— Deixar em aberto —</option>
+          {couriers.map(c=><option key={c.id} value={`${c.id}|${c.name}`}>{c.is_online?'🟢':'⚪'} {c.name} — {c.vehicle||'Moto'}</option>)}
+        </select>
+      </div>
+
+      <button className="btn btn-blue" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading}>
+        {loading?'Criando...':'Criar pedido'}
+      </button>
     </div>
   </AdminShell>;
 }
@@ -1149,6 +1648,7 @@ function App() {
     case 'courier':       return <CourierDash setPage={setPage}/>;
     case 'courier-fin':   return <CourierFin setPage={setPage}/>;
     case 'admin':         return <AdminReports setPage={setPage}/>;
+    case 'admin-couriers': return <AdminCouriers setPage={setPage}/>;
     case 'admin-map':      return <AdminMap setPage={setPage}/>;
     case 'admin-settings': return <AdminSettings setPage={setPage}/>;
     case 'admin-orders':  return <AdminOrders setPage={setPage} setAllocId={setAllocId}/>;
