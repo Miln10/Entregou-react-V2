@@ -13,6 +13,7 @@
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 :root{--blue:#185FA5;--blue-l:#E6F1FB;--blue-m:#378ADD;--green:#3B6D11;--green-l:#EAF3DE;--green-m:#639922;--red:#A32D2D;--red-l:#FCEBEB;--amber:#854F0B;--amber-l:#FAEEDA;--purple:#534AB7;--purple-l:#EEEDFE;--border:rgba(0,0,0,0.09);--text:#1a1a1a;--text2:#666;--bg:#fff;--bg2:#F7F7F5;--r:12px;--rs:8px;--font:'Segoe UI',system-ui,sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -828,6 +829,197 @@ function TrackOrder({orderId,setPage}) {
 }
 
 // ===== COURIER PAGES =====
+
+// ===== COURIER PLAYER CARD =====
+function CourierCard({setPage}) {
+  const {profile} = useAuth();
+  const [stats, setStats] = useState(null);
+  const [ranking, setRanking] = useState([]);
+  const [rankTab, setRankTab] = useState('geral');
+  const radarRef = useRef(null);
+  const radarChart = useRef(null);
+
+  const LEVELS = [
+    {name:'Recruta',    min:0,    color:'#888780', bg:'#F1EFE8'},
+    {name:'Ativo',      min:100,  color:'#185FA5', bg:'#E6F1FB'},
+    {name:'Experiente', min:300,  color:'#3B6D11', bg:'#EAF3DE'},
+    {name:'Veterano',   min:700,  color:'#854F0B', bg:'#FAEEDA'},
+    {name:'Elite',      min:1500, color:'#534AB7', bg:'#EEEDFE'},
+    {name:'Lendário',   min:3000, color:'#993556', bg:'#FBEAF0'},
+  ];
+
+  const getLevel = xp => { for(let i=LEVELS.length-1;i>=0;i--) if(xp>=LEVELS[i].min) return LEVELS[i]; return LEVELS[0]; };
+
+  const calcAttrs = (s) => ({
+    pontualidade: Math.min(99, 60 + Math.round((s.deliveries||0)*0.15 + (s.streak||0)*1.5)),
+    cuidado:      Math.min(99, 70 + Math.round((s.deliveries||0)*0.05)),
+    velocidade:   Math.min(99, 55 + Math.round((s.deliveries||0)*0.2)),
+    aceitacao:    Math.min(99, Math.round(s.acceptRate||75)),
+    rotas:        Math.min(99, 60 + (s.regions||0)*5 + Math.round((s.deliveries||0)*0.05)),
+    consistencia: Math.min(99, 50 + (s.streak||0)*2 + Math.round((s.deliveries||0)*0.08)),
+  });
+
+  const calcOverall = attrs => Math.round(Object.values(attrs).reduce((a,v)=>a+v,0)/6);
+
+  const calcXP = s => {
+    let xp = (s.deliveries||0) * 10;
+    if ((s.streak||0) >= 7)  xp += 70;
+    if ((s.streak||0) >= 30) xp += 150;
+    if ((s.regions||0) >= 3) xp += 30;
+    if ((s.regions||0) >= 5) xp += 60;
+    return xp;
+  };
+
+  useEffect(() => { loadStats(); }, [profile]);
+
+  const loadStats = async () => {
+    if (!profile) return;
+    // My deliveries
+    const {data:orders} = await db.from('orders').select('neighborhood,created_at,status').eq('courier_id', profile.id);
+    const done = (orders||[]).filter(o=>o.status==='done');
+    const deliveries = done.length;
+    const regions = new Set(done.map(o=>o.neighborhood).filter(Boolean)).size;
+    // Accept rate
+    const {data:allOrders} = await db.from('orders').select('status').eq('courier_id', profile.id);
+    const total = (allOrders||[]).length;
+    const acceptRate = total > 0 ? Math.round(done.length / total * 100) : 100;
+    // Streak — days with at least 1 delivery
+    const days = new Set(done.map(o=>o.created_at?.slice(0,10))).size;
+    const streak = Math.min(days, 30);
+    setStats({deliveries, regions, acceptRate, streak});
+    // Load ranking
+    const {data:couriers} = await db.from('users').select('id,name,courier_number').eq('role','courier');
+    const {data:allDone} = await db.from('orders').select('courier_id,neighborhood').eq('status','done');
+    const rankData = (couriers||[]).map(co => {
+      const myOrders = (allDone||[]).filter(o=>o.courier_id===co.id);
+      const d = myOrders.length;
+      const r = new Set(myOrders.map(o=>o.neighborhood).filter(Boolean)).size;
+      const xp = d*10 + (r>=3?30:0) + (r>=5?60:0);
+      return {id:co.id, name:co.name, number:co.courier_number, deliveries:d, regions:r, xp, isMe:co.id===profile.id};
+    }).sort((a,b)=>b.xp-a.xp);
+    setRanking(rankData);
+  };
+
+  useEffect(() => {
+    if (!stats || !radarRef.current) return;
+    const attrs = calcAttrs(stats);
+    if (radarChart.current) { radarChart.current.destroy(); radarChart.current = null; }
+    const L = window.Chart;
+    if (!L) return;
+    radarChart.current = new L(radarRef.current, {
+      type:'radar',
+      data:{
+        labels:['Pontual.','Cuidado','Veloc.','Aceite','Rotas','Consist.'],
+        datasets:[{data:Object.values(attrs),backgroundColor:'rgba(24,95,165,0.12)',borderColor:'#185FA5',borderWidth:1.5,pointBackgroundColor:'#185FA5',pointRadius:3}]
+      },
+      options:{responsive:false,plugins:{legend:{display:false}},scales:{r:{min:0,max:100,ticks:{display:false,stepSize:25},grid:{color:'rgba(128,128,128,0.2)'},pointLabels:{font:{size:10},color:'#888780'},angleLines:{color:'rgba(128,128,128,0.2)'}}}}
+    });
+    return () => { if(radarChart.current){radarChart.current.destroy();radarChart.current=null;} };
+  }, [stats]);
+
+  if (!stats) return <div className="screen"><Topbar title="Meu card" onBack={()=>setPage('courier')} badge="Entregador" badgeClass="bd"/><Loading/></div>;
+
+  const attrs   = calcAttrs(stats);
+  const overall = calcOverall(attrs);
+  const xp      = calcXP(stats);
+  const lv      = getLevel(xp);
+  const nextLv  = LEVELS[LEVELS.indexOf(lv)+1];
+  const pct     = nextLv ? Math.round((xp-lv.min)/(nextLv.min-lv.min)*100) : 100;
+
+  const ATTR_LIST = [
+    {key:'pontualidade', label:'Pontualidade',     color:'#185FA5'},
+    {key:'cuidado',      label:'Cuidado c/ pacote',color:'#3B6D11'},
+    {key:'velocidade',   label:'Velocidade',        color:'#854F0B'},
+    {key:'aceitacao',    label:'Taxa de aceite',    color:'#534AB7'},
+    {key:'rotas',        label:'Conh. de rotas',    color:'#993556'},
+    {key:'consistencia', label:'Consistência',      color:'#185FA5'},
+  ];
+
+  const medals = ['🥇','🥈','🥉'];
+  const myRankPos = ranking.findIndex(r=>r.isMe);
+
+  return <div className="screen">
+    <Topbar title="Meu card" onBack={()=>setPage('courier')} badge="Entregador" badgeClass="bd"/>
+    <div className="scroll">
+
+      {/* Main card — FIFA style */}
+      <div style={{margin:'12px 14px',padding:'16px',background:'var(--bg2)',borderRadius:'var(--r)',border:'1px solid var(--border)',display:'flex',gap:14,flexWrap:'wrap'}}>
+
+        {/* Left: avatar + overall + level */}
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:6,minWidth:90}}>
+          <div style={{width:56,height:56,borderRadius:'50%',background:'var(--bg)',border:`2px solid ${lv.color}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:700,color:lv.color}}>
+            {profile?.name?.split(' ').map(n=>n[0]).join('').slice(0,2)}
+          </div>
+          <div style={{fontSize:40,fontWeight:700,color:'var(--text)',lineHeight:1}}>{overall}</div>
+          <div style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:20,background:lv.bg,color:lv.color,border:`1px solid ${lv.color}`}}>{lv.name}</div>
+          <div style={{fontSize:12,fontWeight:600,color:'var(--text2)'}}>#{profile?.courier_number||'—'}</div>
+          <div style={{fontSize:12,color:'var(--text)',fontWeight:600,textAlign:'center'}}>{profile?.name}</div>
+          {/* XP bar */}
+          <div style={{width:'100%'}}>
+            <div style={{height:4,background:'var(--bg)',borderRadius:2,overflow:'hidden',marginTop:4}}>
+              <div style={{height:'100%',width:pct+'%',background:lv.color,borderRadius:2}}></div>
+            </div>
+            <div style={{fontSize:10,color:'var(--text2)',marginTop:3,textAlign:'center'}}>{xp} XP</div>
+          </div>
+        </div>
+
+        {/* Mid: attribute bars */}
+        <div style={{flex:1,minWidth:150}}>
+          {ATTR_LIST.map(a=><div key={a.key} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 0',borderBottom:'1px solid var(--border)'}}>
+            <div style={{fontSize:14,fontWeight:700,color:'var(--text)',width:26,textAlign:'right',flexShrink:0}}>{attrs[a.key]}</div>
+            <div style={{flex:1,height:5,background:'var(--bg)',borderRadius:3,overflow:'hidden'}}>
+              <div style={{height:'100%',width:attrs[a.key]+'%',background:a.color,borderRadius:3}}></div>
+            </div>
+            <div style={{fontSize:11,color:'var(--text2)',width:100,flexShrink:0}}>{a.label}</div>
+          </div>)}
+        </div>
+
+        {/* Right: radar */}
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+          <div style={{fontSize:10,color:'var(--text2)'}}>Radar</div>
+          <canvas ref={radarRef} width={140} height={140} role="img" aria-label="Radar de atributos"/>
+        </div>
+      </div>
+
+      {/* Stats strip */}
+      <div className="mrow">
+        <div className="mcard"><div className="mval">{stats.deliveries}</div><div className="mlbl">entregas</div></div>
+        <div className="mcard"><div className="mval" style={{color:'var(--green)'}}>{stats.streak}</div><div className="mlbl">dias seguidos</div></div>
+        <div className="mcard"><div className="mval" style={{color:'var(--blue)'}}>{stats.regions}</div><div className="mlbl">regiões</div></div>
+        <div className="mcard"><div className="mval" style={{color:'var(--amber)'}}>{stats.acceptRate}%</div><div className="mlbl">aceite</div></div>
+      </div>
+
+      {/* Ranking */}
+      <div className="stitle">Ranking de entregadores</div>
+      <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',margin:'0 14px 10px'}}>
+        {[['geral','Geral'],['semana','Esta semana']].map(([v,l])=>
+          <button key={v} onClick={()=>setRankTab(v)} style={{padding:'8px 14px',fontSize:13,fontWeight:rankTab===v?600:400,cursor:'pointer',color:rankTab===v?'var(--blue)':'var(--text2)',borderBottom:rankTab===v?'2px solid var(--blue)':'2px solid transparent',background:'none',border:'none',borderBottom:rankTab===v?'2px solid var(--blue)':'2px solid transparent',fontFamily:'var(--font)'}}>
+            {l}
+          </button>
+        )}
+      </div>
+      {ranking.slice(0,10).map((r,i)=><div key={r.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',borderBottom:'1px solid var(--border)',background:r.isMe?'var(--blue-l)':'transparent'}}>
+        <div style={{width:24,textAlign:'center',fontSize:14,fontWeight:700,color:i<3?['#BA7517','#888780','#993C1D'][i]:'var(--text2)',flexShrink:0}}>
+          {i<3?medals[i]:i+1}
+        </div>
+        <div style={{width:32,height:32,borderRadius:'50%',background:r.isMe?'var(--blue)':'var(--bg2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:r.isMe?'white':'var(--text2)',flexShrink:0}}>
+          {r.name?.split(' ').map(n=>n[0]).join('').slice(0,2)}
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,fontWeight:r.isMe?700:500,color:'var(--text)'}}>{r.name}{r.isMe?' (você)':''}</div>
+          <div style={{fontSize:11,color:'var(--text2)'}}>#{r.number||'—'} · {r.deliveries} entregas · {r.regions} regiões</div>
+        </div>
+        <div style={{fontSize:13,fontWeight:600,color:i===0?'#BA7517':'var(--text2)'}}>{r.xp} XP</div>
+      </div>)}
+
+      {myRankPos >= 0 && myRankPos >= 10 && <div style={{margin:'8px 14px',padding:'10px 14px',background:'var(--blue-l)',borderRadius:'var(--rs)',fontSize:13,color:'var(--blue)',fontWeight:600}}>
+        Sua posição no ranking: #{myRankPos+1}
+      </div>}
+
+    </div>
+  </div>;
+}
+
 function CourierDash({setPage}) {
   const {profile}=useAuth(); const toast=useToast();
   const [online,setOnline]=useState(true);
@@ -930,6 +1122,7 @@ function CourierDash({setPage}) {
     </div>
     <div className="tabbar">
       <button className="tab-item active"><span className="tab-icon">🛵</span><span>Pedidos</span></button>
+      <button className="tab-item" onClick={()=>setPage('courier-card')}><span className="tab-icon">⭐</span><span>Card</span></button>
       <button className="tab-item" onClick={()=>setPage('courier-closing')}><span className="tab-icon">✅</span><span>Fechamento</span></button>
       <button className="tab-item" onClick={()=>setPage('courier-fin')}><span className="tab-icon">💰</span><span>Financeiro</span></button>
       <button className="tab-item" onClick={()=>setPage('profile')}><span className="tab-icon">👤</span><span>Perfil</span></button>
@@ -2132,6 +2325,7 @@ function App() {
     case 'admin-couriers': return <AdminCouriers setPage={setPage}/>;
     case 'admin-manual':   return <AdminManualDelivery setPage={setPage}/>;
     case 'client-closing': return <ClientClosing setPage={setPage}/>;
+    case 'courier-card':   return <CourierCard setPage={setPage}/>
     case 'courier-closing':return <CourierClosing setPage={setPage}/>;
     case 'admin-map':      return <AdminMap setPage={setPage}/>;
     case 'admin-settings': return <AdminSettings setPage={setPage}/>;
