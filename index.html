@@ -1856,13 +1856,17 @@ function AdminCouriers({setPage}) {
   const [moveWithTeam, setMoveWithTeam] = useState(false);
   const [expandId, setExpandId] = useState(null);
 
+  const [clients, setClients] = useState([]);
+
   const load = useCallback(async () => {
-    const [cr, nw] = await Promise.all([
+    const [cr, nw, cl] = await Promise.all([
       db.from('users').select('id,name,email,phone,vehicle,plate,is_online,can_refer,referral_code,referred_by,network_id,courier_number,forced_level,created_at').eq('role','courier').order('name'),
-      db.from('networks').select('*').order('name')
+      db.from('networks').select('*').order('name'),
+      db.from('users').select('id,name,network_id').eq('role','client').order('name'),
     ]);
     setCouriers(cr.data || []);
     setNetworks(nw.data || []);
+    setClients(cl.data || []);
     setLoading(false);
   }, []);
 
@@ -2065,12 +2069,60 @@ function AdminCouriers({setPage}) {
 
         {/* ORG VIEW */}
         {view==='org'&&<div style={{padding:'0 14px 16px'}}>
+          {/* Networks summary */}
+          {nets.length>0&&<div style={{marginBottom:16,padding:'12px 14px',background:'var(--bg2)',borderRadius:'var(--r)',border:'1px solid var(--border)'}}>
+            <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:10}}>Resumo das redes ativas</div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {nets.map((net,ni)=>{
+                const networkId=net.root.network_id;
+                const networkName=networkId?networks.find(n=>n.id===networkId)?.name||`Rede ${ni+1}`:`Rede ${ni+1} (sem nome)`;
+                const networkClients=networkId?clients.filter(c=>c.network_id===networkId):[];
+                const onlineCount=couriers.filter(c=>c.is_online&&[net.root.id,...net.nivel1.map(x=>x.id),...net.nivel2.map(x=>x.id)].includes(c.id)).length;
+                const totalCount=net.nivel1.length+net.nivel2.length+1;
+                return <div key={net.root.id} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',background:'var(--bg)',borderRadius:'var(--rs)',border:'1px solid var(--border)',flexWrap:'wrap'}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{networkName}</div>
+                    <div style={{fontSize:11,color:'var(--text2)',marginTop:2}}>
+                      {totalCount} entregador{totalCount!==1?'es':''} · 🟢 {onlineCount} online
+                    </div>
+                  </div>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {networkClients.length>0
+                      ?networkClients.map(cl=><span key={cl.id} style={{fontSize:11,padding:'2px 8px',borderRadius:10,background:'var(--blue-l)',color:'var(--blue)',fontWeight:600}}>🏪 {cl.name}</span>)
+                      :<span style={{fontSize:11,color:'var(--text2)'}}>Sem clientes</span>}
+                  </div>
+                </div>;
+              })}
+            </div>
+          </div>}
           {nets.length===0&&<Empty icon="🛵" text="Nenhum entregador cadastrado ainda."/>}
           {nets.map((net,ni)=><div key={net.root.id} style={{marginBottom:24}}>
             {/* Network header */}
-            <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:12,display:'flex',alignItems:'center',gap:8}}>
-              <span style={{flex:1}}>Rede {ni+1} — {net.root.name?.split(' ')[0]} · {net.nivel1.length+net.nivel2.length+1} membros</span>
-              {net.root.network_id&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:10,background:'var(--amber-l)',color:'var(--amber)',fontWeight:600}}>{networks.find(n=>n.id===net.root.network_id)?.name||''}</span>}
+            <div style={{background:'var(--bg2)',borderRadius:'var(--r)',padding:'12px 14px',marginBottom:14,border:'1px solid var(--border)'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+                <div style={{fontSize:13,fontWeight:700,color:'var(--text)',flex:1}}>
+                  {net.root.network_id ? networks.find(n=>n.id===net.root.network_id)?.name||`Rede ${ni+1}` : `Rede ${ni+1}`}
+                </div>
+                <span style={{fontSize:11,padding:'2px 8px',borderRadius:10,background:'var(--green-l)',color:'var(--green)',fontWeight:600}}>
+                  {net.nivel1.length+net.nivel2.length+1} membro{net.nivel1.length+net.nivel2.length+1!==1?'s':''}
+                </span>
+                <span style={{fontSize:11,padding:'2px 8px',borderRadius:10,background:couriers.filter(c=>c.is_online&&[net.root.id,...net.nivel1.map(x=>x.id),...net.nivel2.map(x=>x.id)].includes(c.id)).length>0?'var(--green-l)':'var(--bg)',color:couriers.filter(c=>c.is_online&&[net.root.id,...net.nivel1.map(x=>x.id),...net.nivel2.map(x=>x.id)].includes(c.id)).length>0?'var(--green)':'var(--text2)',fontWeight:600}}>
+                  🟢 {couriers.filter(c=>c.is_online&&[net.root.id,...net.nivel1.map(x=>x.id),...net.nivel2.map(x=>x.id)].includes(c.id)).length} online
+                </span>
+              </div>
+              {/* Clients this network serves */}
+              {(()=>{
+                const networkId = net.root.network_id;
+                const networkClients = networkId ? clients.filter(c=>c.network_id===networkId) : [];
+                return networkClients.length > 0
+                  ? <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                      <span style={{fontSize:11,color:'var(--text2)',fontWeight:600}}>Clientes:</span>
+                      {networkClients.map(cl=><span key={cl.id} style={{fontSize:11,padding:'2px 9px',borderRadius:10,background:'var(--blue-l)',color:'var(--blue)',fontWeight:600}}>🏪 {cl.name}</span>)}
+                    </div>
+                  : <div style={{fontSize:11,color:'var(--text2)'}}>
+                      {networkId ? 'Nenhum cliente vinculado a esta rede ainda.' : '⚠️ Sem rede atribuída — vincule em ⚙️ Config → Redes'}
+                    </div>;
+              })()}
             </div>
 
             {/* Nivel 0 — Root */}
