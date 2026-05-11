@@ -450,11 +450,9 @@ function ClientClosing({setPage}) {
 
   const loadAll = async () => {
     if (!profile) return;
-    // Couriers who worked for this client (from orders)
-    const {data:orders} = await db.from('orders').select('courier_id,courier_name,courier_number').eq('client_id',profile.id).eq('status','done').order('created_at',{ascending:false}).limit(100);
-    const seen = {}; const list = [];
-    (orders||[]).forEach(o=>{ if(o.courier_id&&!seen[o.courier_id]){seen[o.courier_id]=true;list.push({id:o.courier_id,name:o.courier_name,number:o.courier_number});}});
-    setCouriers(list);
+    // Carrega TODOS os entregadores (não só os que já entregaram)
+    const {data:allCouriers} = await db.from('users').select('id,name,courier_number').eq('role','courier').order('name');
+    setCouriers((allCouriers||[]).map(c=>({id:c.id,name:c.name,number:c.courier_number})));
     // My recent closings
     const {data:cls} = await db.from('daily_closings').select('*').eq('client_id',profile.id).order('date',{ascending:false}).limit(20);
     setMyClosings(cls||[]);
@@ -520,6 +518,7 @@ function ClientClosing({setPage}) {
           <option value="">— Selecione o entregador —</option>
           {couriers.map(x=><option key={x.id} value={x.id}>{x.number?'#'+x.number+' ':''}{x.name}</option>)}
         </select>
+        {couriers.length===0&&<div style={{fontSize:12,color:'var(--text2)',marginTop:6}}>Nenhum entregador cadastrado ainda.</div>}
       </div>
       <div className="stitle">📅 Data</div>
       <div className="fgrp"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
