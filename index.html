@@ -422,6 +422,278 @@ function ProfilePage({goBack}) {
 }
 
 // ===== CLIENT PAGES =====
+
+// ===== CLIENT CLOSING =====
+function ClientClosing({setPage}) {
+  const {profile} = useAuth(); const toast = useToast();
+  const [couriers, setCouriers] = useState([]);
+  const [selCourier, setSelCourier] = useState('');
+  const [priceItems, setPriceItems] = useState([]);
+  const [quantities, setQuantities] = useState({});
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10));
+  const [loading, setLoading] = useState(false);
+  const [existing, setExisting] = useState(null);
+  const [myClosings, setMyClosings] = useState([]);
+
+  useEffect(()=>{ loadAll(); },[profile]);
+
+  const loadAll = async () => {
+    if (!profile) return;
+    // Couriers who worked for this client (from orders)
+    const {data:orders} = await db.from('orders').select('courier_id,courier_name,courier_number').eq('client_id',profile.id).eq('status','done').order('created_at',{ascending:false}).limit(100);
+    const seen = {}; const list = [];
+    (orders||[]).forEach(o=>{ if(o.courier_id&&!seen[o.courier_id]){seen[o.courier_id]=true;list.push({id:o.courier_id,name:o.courier_name,number:o.courier_number});}});
+    setCouriers(list);
+    // My recent closings
+    const {data:cls} = await db.from('daily_closings').select('*').eq('client_id',profile.id).order('date',{ascending:false}).limit(20);
+    setMyClosings(cls||[]);
+    // Load prices
+    const items = await getPriceTableForClient(profile.id);
+    setPriceItems(items);
+  };
+
+  const checkExisting = async (courierId, dateVal) => {
+    if (!courierId || !dateVal) return;
+    const {data} = await db.from('daily_closings').select('*').eq('client_id',profile.id).eq('courier_id',courierId).eq('date',dateVal).maybeSingle();
+    setExisting(data);
+  };
+
+  useEffect(()=>{ checkExisting(selCourier,date); },[selCourier,date]);
+
+  const totalQty = Object.values(quantities).reduce((a,v)=>a+(+v||0),0);
+  const totalVal = Object.entries(quantities).reduce((a,[k,v])=>{
+    const item=priceItems.find(p=>(p.neighborhood_key||p.key)===k);
+    return a+(item?+(item.client_price||item.cliente||0)*(+v||0):0);
+  },0);
+
+  const submit = async () => {
+    if (!selCourier) { toast('Selecione o entregador'); return; }
+    if (totalQty===0) { toast('Informe ao menos 1 entrega'); return; }
+    setLoading(true);
+    const courier = couriers.find(x=>x.id===selCourier);
+    const submission = Object.entries(quantities).filter(([,v])=>+v>0).map(([k,v])=>{
+      const item=priceItems.find(p=>(p.neighborhood_key||p.key)===k);
+      return {key:k,label:item?.neighborhood_label||item?.label||k,qty:+v,client_price:+(item?.client_price||item?.cliente||0)};
+    });
+    // Check if courier already submitted
+    const {data:existing2} = await db.from('daily_closings').select('*').eq('client_id',profile.id).eq('courier_id',selCourier).eq('date',date).maybeSingle();
+    let status = 'pending';
+    let agreedData = null;
+    if (existing2?.courier_submission) {
+      // Compare
+      const cs = existing2.courier_submission;
+      const match = submission.every(s=>{ const cf=cs.find(x=>x.key===s.key); return cf&&cf.qty===s.qty; }) && cs.every(s=>{ const cl=submission.find(x=>x.key===s.key); return cl&&cl.qty===s.qty; });
+      status = match ? 'matched' : 'diverged';
+      if (match) agreedData = submission;
+    }
+    const payload = { client_id:profile.id, client_name:profile.name, courier_id:selCourier, courier_name:courier?.name||'', courier_number:courier?.number||null, date, client_submission:submission, status, ...(agreedData&&{agreed_data:agreedData}), updated_at:new Date().toISOString() };
+    if (existing2) { await db.from('daily_closings').update(payload).eq('id',existing2.id); }
+    else { await db.from('daily_closings').insert(payload); }
+    setLoading(false);
+    if (status==='matched') toast('✅ Fechamento confirmado! Coincide com o entregador.');
+    else if (status==='diverged') toast('⚠️ Divergência encontrada! Entregador registrou valores diferentes.');
+    else toast('Lançamento enviado! Aguardando confirmação do entregador.');
+    setQuantities({}); loadAll();
+  };
+
+  const statusInfo = { pending:{icon:'⏳',label:'Aguardando',color:'var(--amber)'}, matched:{icon:'✅',label:'Confirmado',color:'var(--green)'}, diverged:{icon:'⚠️',label:'Divergência',color:'var(--red)'}, agreed:{icon:'✅',label:'Acordado',color:'var(--green)'}, disputed:{icon:'🔴',label:'Em disputa',color:'var(--red)'} };
+
+  return <div className="screen">
+    <Topbar title="Fechamento diário" onBack={()=>setPage('client-orders')} badge="Cliente" badgeClass="bc"/>
+    <div className="scroll">
+      <div className="notice ni" style={{marginTop:10}}>Registre as entregas realizadas ao final da jornada. O entregador confirma no app dele.</div>
+
+      <div className="stitle">🛵 Entregador</div>
+      <div className="fgrp">
+        <select value={selCourier} onChange={e=>setSelCourier(e.target.value)}>
+          <option value="">— Selecione o entregador —</option>
+          {couriers.map(x=><option key={x.id} value={x.id}>{x.number?'#'+x.number+' ':''}{x.name}</option>)}
+        </select>
+      </div>
+      <div className="stitle">📅 Data</div>
+      <div className="fgrp"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+
+      {existing&&<div style={{margin:'0 14px 10px',padding:'10px 14px',borderRadius:'var(--rs)',background:statusInfo[existing.status]?.color==='var(--green)'?'var(--green-l)':statusInfo[existing.status]?.color==='var(--red)'?'var(--red-l)':'var(--amber-l)'}}>
+        <div style={{fontSize:13,fontWeight:600,color:statusInfo[existing.status]?.color}}>{statusInfo[existing.status]?.icon} Já existe lançamento para esta data: {statusInfo[existing.status]?.label}</div>
+        {existing.status==='diverged'&&<div style={{fontSize:11,marginTop:4,color:'var(--red)'}}>Você registrou {(existing.client_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas. Entregador registrou {(existing.courier_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas.</div>}
+      </div>}
+
+      {priceItems.length===0&&selCourier&&<div className="notice ne">Configure sua tabela de preços em contato com o admin.</div>}
+      {priceItems.length>0&&<>
+        <div className="stitle">📦 Entregas por região</div>
+        <div style={{padding:'0 14px'}}>
+          {priceItems.map(item=>{
+            const key=item.neighborhood_key||item.key;
+            const qty=quantities[key]||0;
+            return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:500}}>{item.neighborhood_label||item.label}</div>
+                <div style={{fontSize:11,color:'var(--text2)'}}>{fmtMoney(+(item.client_price||item.cliente||0))} por entrega</div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <button onClick={()=>setQuantities(q=>({...q,[key]:Math.max(0,(q[key]||0)-1)}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
+                <input type="number" min="0" value={qty||''} onChange={e=>setQuantities(q=>({...q,[key]:Math.max(0,parseInt(e.target.value)||0)}))} placeholder="0" style={{width:52,textAlign:'center',padding:'5px 4px',fontSize:15,fontWeight:700}}/>
+                <button onClick={()=>setQuantities(q=>({...q,[key]:(q[key]||0)+1}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:16,color:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center'}}>+</button>
+              </div>
+            </div>;
+          })}
+        </div>
+        {totalQty>0&&<div className="pbox" style={{margin:'12px 14px'}}>
+          <div className="prow"><span>Total de entregas</span><span style={{fontWeight:700}}>{totalQty}</span></div>
+          <div className="ptotal"><span>Total a pagar</span><span style={{color:'var(--blue)'}}>{fmtMoney(totalVal)}</span></div>
+        </div>}
+        <button className="btn btn-blue" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading||totalQty===0}>{loading?'Enviando...':'Enviar fechamento'}</button>
+      </>}
+
+      {myClosings.length>0&&<>
+        <div className="stitle" style={{paddingTop:8}}>Histórico de fechamentos</div>
+        {myClosings.map(cl=>{
+          const si=statusInfo[cl.status]||{icon:'?',label:cl.status,color:'var(--text2)'};
+          const total=(cl.agreed_data||cl.client_submission||[]).reduce((a,x)=>a+x.qty,0);
+          return <div key={cl.id} className="ocard" style={{margin:'0 14px 8px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div><div style={{fontSize:13,fontWeight:600}}>{fmtDate(cl.date)} · {cl.courier_name}</div><div style={{fontSize:11,color:'var(--text2)'}}>{total} entrega{total!==1?'s':''}</div></div>
+              <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:si.color==='var(--green)'?'var(--green-l)':si.color==='var(--red)'?'var(--red-l)':'var(--amber-l)',color:si.color}}>{si.icon} {si.label}</span>
+            </div>
+          </div>;
+        })}
+      </>}
+    </div>
+  </div>;
+}
+
+// ===== COURIER CLOSING =====
+function CourierClosing({setPage}) {
+  const {profile} = useAuth(); const toast = useToast();
+  const [clients, setClients] = useState([]);
+  const [selClient, setSelClient] = useState('');
+  const [priceItems, setPriceItems] = useState([]);
+  const [quantities, setQuantities] = useState({});
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10));
+  const [loading, setLoading] = useState(false);
+  const [myClosings, setMyClosings] = useState([]);
+  const [existing, setExisting] = useState(null);
+
+  useEffect(()=>{ loadAll(); },[profile]);
+
+  const loadAll = async () => {
+    if (!profile) return;
+    const {data:orders} = await db.from('orders').select('client_id,client_name').eq('courier_id',profile.id).eq('status','done').order('created_at',{ascending:false}).limit(100);
+    const seen={}; const list=[];
+    (orders||[]).forEach(o=>{ if(o.client_id&&!seen[o.client_id]){seen[o.client_id]=true;list.push({id:o.client_id,name:o.client_name});}});
+    setClients(list);
+    const {data:cls} = await db.from('daily_closings').select('*').eq('courier_id',profile.id).order('date',{ascending:false}).limit(20);
+    setMyClosings(cls||[]);
+  };
+
+  const onSelectClient = async (id) => {
+    setSelClient(id); setQuantities({}); setPriceItems([]); setExisting(null);
+    if (!id) return;
+    const items = await getPriceTableForClient(id);
+    // Courier only sees neighborhood names and qty — NOT prices
+    setPriceItems(items.map(i=>({...i,_hidePrice:true})));
+    checkExisting(id, date);
+  };
+
+  const checkExisting = async (clientId, dateVal) => {
+    if (!clientId||!dateVal) return;
+    const {data} = await db.from('daily_closings').select('*').eq('courier_id',profile.id).eq('client_id',clientId).eq('date',dateVal).maybeSingle();
+    setExisting(data);
+  };
+
+  useEffect(()=>{ if(selClient) checkExisting(selClient,date); },[date]);
+
+  const totalQty = Object.values(quantities).reduce((a,v)=>a+(+v||0),0);
+
+  const submit = async () => {
+    if (!selClient) { toast('Selecione o cliente'); return; }
+    if (totalQty===0) { toast('Informe ao menos 1 entrega'); return; }
+    setLoading(true);
+    const client = clients.find(x=>x.id===selClient);
+    const submission = Object.entries(quantities).filter(([,v])=>+v>0).map(([k,v])=>{
+      const item=priceItems.find(p=>(p.neighborhood_key||p.key)===k);
+      return {key:k,label:item?.neighborhood_label||item?.label||k,qty:+v};
+    });
+    const {data:ex} = await db.from('daily_closings').select('*').eq('courier_id',profile.id).eq('client_id',selClient).eq('date',date).maybeSingle();
+    let status='pending', agreedData=null;
+    if (ex?.client_submission) {
+      const cs=ex.client_submission;
+      const match=submission.every(s=>{ const cf=cs.find(x=>x.key===s.key); return cf&&cf.qty===s.qty; }) && cs.every(s=>{ const cl2=submission.find(x=>x.key===s.key); return cl2&&cl2.qty===s.qty; });
+      status=match?'matched':'diverged';
+      if(match) agreedData=submission;
+    }
+    const payload={courier_id:profile.id,courier_name:profile.name,courier_number:profile.courier_number||null,client_id:selClient,client_name:client?.name||'',date,courier_submission:submission,status,...(agreedData&&{agreed_data:agreedData}),updated_at:new Date().toISOString()};
+    if(ex){ await db.from('daily_closings').update(payload).eq('id',ex.id); }
+    else { await db.from('daily_closings').insert(payload); }
+    setLoading(false);
+    if(status==='matched') toast('✅ Fechamento confirmado! Coincide com o cliente.');
+    else if(status==='diverged') toast('⚠️ Divergência! Cliente registrou valores diferentes.');
+    else toast('Lançamento enviado! Aguardando confirmação do cliente.');
+    setQuantities({}); loadAll();
+  };
+
+  const statusInfo={pending:{icon:'⏳',label:'Aguardando',color:'var(--amber)'},matched:{icon:'✅',label:'Confirmado',color:'var(--green)'},diverged:{icon:'⚠️',label:'Divergência',color:'var(--red)'},agreed:{icon:'✅',label:'Acordado',color:'var(--green)'},disputed:{icon:'🔴',label:'Em disputa',color:'var(--red)'}};
+
+  return <div className="screen">
+    <Topbar title="Fechamento do dia" onBack={()=>setPage('courier')} badge="Entregador" badgeClass="bd"/>
+    <div className="scroll">
+      <div className="notice ni" style={{marginTop:10}}>Registre suas entregas ao final da jornada. O cliente confirma no app dele.</div>
+
+      <div className="stitle">👤 Cliente</div>
+      <div className="fgrp">
+        <select value={selClient} onChange={e=>onSelectClient(e.target.value)}>
+          <option value="">— Selecione o cliente —</option>
+          {clients.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>
+      </div>
+      <div className="stitle">📅 Data</div>
+      <div className="fgrp"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+
+      {existing&&<div style={{margin:'0 14px 10px',padding:'10px 14px',borderRadius:'var(--rs)',background:existing.status==='matched'?'var(--green-l)':existing.status==='diverged'?'var(--red-l)':'var(--amber-l)'}}>
+        <div style={{fontSize:13,fontWeight:600,color:statusInfo[existing.status]?.color}}>{statusInfo[existing.status]?.icon} Já existe lançamento: {statusInfo[existing.status]?.label}</div>
+        {existing.status==='diverged'&&<div style={{fontSize:11,marginTop:4,color:'var(--red)'}}>Você: {(existing.courier_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas · Cliente: {(existing.client_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas</div>}
+      </div>}
+
+      {priceItems.length>0&&<>
+        <div className="stitle">📦 Suas entregas por região</div>
+        <div className="notice ni" style={{margin:'0 14px 8px',fontSize:12}}>Informe apenas a quantidade. Os valores são controlados pelo admin.</div>
+        <div style={{padding:'0 14px'}}>
+          {priceItems.map(item=>{
+            const key=item.neighborhood_key||item.key;
+            const qty=quantities[key]||0;
+            return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{flex:1,fontSize:13,fontWeight:500}}>{item.neighborhood_label||item.label}</div>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <button onClick={()=>setQuantities(q=>({...q,[key]:Math.max(0,(q[key]||0)-1)}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
+                <input type="number" min="0" value={qty||''} onChange={e=>setQuantities(q=>({...q,[key]:Math.max(0,parseInt(e.target.value)||0)}))} placeholder="0" style={{width:52,textAlign:'center',padding:'5px 4px',fontSize:15,fontWeight:700}}/>
+                <button onClick={()=>setQuantities(q=>({...q,[key]:(q[key]||0)+1}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:16,color:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center'}}>+</button>
+              </div>
+            </div>;
+          })}
+        </div>
+        {totalQty>0&&<div className="pbox" style={{margin:'12px 14px'}}>
+          <div className="ptotal"><span>Total de entregas</span><span style={{color:'var(--green)',fontSize:18}}>{totalQty}</span></div>
+        </div>}
+        <button className="btn btn-green" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading||totalQty===0}>{loading?'Enviando...':'Enviar meu fechamento'}</button>
+      </>}
+
+      {myClosings.length>0&&<>
+        <div className="stitle" style={{paddingTop:8}}>Histórico</div>
+        {myClosings.map(cl=>{
+          const si=statusInfo[cl.status]||{icon:'?',label:cl.status,color:'var(--text2)'};
+          const total=(cl.courier_submission||[]).reduce((a,x)=>a+x.qty,0);
+          return <div key={cl.id} className="ocard" style={{margin:'0 14px 8px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div><div style={{fontSize:13,fontWeight:600}}>{fmtDate(cl.date)} · {cl.client_name}</div><div style={{fontSize:11,color:'var(--text2)'}}>{total} entrega{total!==1?'s':''}</div></div>
+              <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:si.color==='var(--green)'?'var(--green-l)':si.color==='var(--red)'?'var(--red-l)':'var(--amber-l)',color:si.color}}>{si.icon} {si.label}</span>
+            </div>
+          </div>;
+        })}
+      </>}
+    </div>
+  </div>;
+}
+
 function ClientOrders({setPage,setTrackId}) {
   const {profile}=useAuth(); const [orders,setOrders]=useState([]); const [loading,setLoading]=useState(true);
   const load=useCallback(async()=>{if(!profile)return;const{data}=await db.from('orders').select('*').eq('client_id',profile.id).order('created_at',{ascending:false}).limit(40);setOrders(data||[]);setLoading(false);},[profile]);
@@ -441,6 +713,7 @@ function ClientOrders({setPage,setTrackId}) {
     <div className="tabbar">
       <button className="tab-item" onClick={()=>setPage('new-order')}><span className="tab-icon">➕</span><span>Novo pedido</span></button>
       <button className="tab-item active"><span className="tab-icon">📋</span><span>Pedidos</span></button>
+      <button className="tab-item" onClick={()=>setPage('client-closing')}><span className="tab-icon">✅</span><span>Fechamento</span></button>
       <button className="tab-item" onClick={()=>setPage('profile')}><span className="tab-icon">👤</span><span>Perfil</span></button>
     </div>
   </div>;
@@ -657,6 +930,7 @@ function CourierDash({setPage}) {
     </div>
     <div className="tabbar">
       <button className="tab-item active"><span className="tab-icon">🛵</span><span>Pedidos</span></button>
+      <button className="tab-item" onClick={()=>setPage('courier-closing')}><span className="tab-icon">✅</span><span>Fechamento</span></button>
       <button className="tab-item" onClick={()=>setPage('courier-fin')}><span className="tab-icon">💰</span><span>Financeiro</span></button>
       <button className="tab-item" onClick={()=>setPage('profile')}><span className="tab-icon">👤</span><span>Perfil</span></button>
     </div>
@@ -981,7 +1255,7 @@ function AdminShell({children,page,setPage}) {
     <div className="tabbar">
       <button className={`tab-item ${page==='admin'?'active':''}`} onClick={()=>setPage('admin')}><span className="tab-icon">📊</span><span>Início</span></button>
       <button className={`tab-item ${page==='admin-orders'?'active':''}`} onClick={()=>setPage('admin-orders')}><span className="tab-icon">📋</span><span>Pedidos</span></button>
-      <button className={`tab-item ${page==='admin-new'?'active':''}`} onClick={()=>setPage('admin-new')}><span className="tab-icon">➕</span><span>Novo</span></button>
+      <button className={`tab-item ${page==='admin-new'||page==='admin-manual'?'active':''}`} onClick={()=>setPage('admin-new')}><span className="tab-icon">➕</span><span>Novo</span></button>
       <button className={`tab-item ${page==='admin-couriers'?'active':''}`} onClick={()=>setPage('admin-couriers')}><span className="tab-icon">🛵</span><span>Equipe</span></button>
       <button className={`tab-item ${page==='admin-map'?'active':''}`} onClick={()=>setPage('admin-map')}><span className="tab-icon">🗺️</span><span>Mapa</span></button>
       <button className={`tab-item ${page==='admin-fin'?'active':''}`} onClick={()=>setPage('admin-fin')}><span className="tab-icon">💰</span><span>Finanças</span></button>
@@ -1307,6 +1581,193 @@ function AdminCouriers({setPage}) {
   </AdminShell>;
 }
 
+
+// ===== ADMIN MANUAL DELIVERY =====
+function AdminManualDelivery({setPage}) {
+  const toast = useToast();
+  const [couriers, setCouriers] = useState([]);
+  const [clients,  setClients]  = useState([]);
+  const [selCourier, setSelCourier] = useState('');
+  const [selClient,  setSelClient]  = useState('');
+  const [priceItems, setPriceItems] = useState([]);
+  const [quantities, setQuantities] = useState({});
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10));
+  const [notes, setNotes] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState([]);
+
+  useEffect(()=>{
+    db.from('users').select('id,name,courier_number,referred_by').eq('role','courier').order('name').then(({data})=>setCouriers(data||[]));
+    db.from('users').select('id,name,address').eq('role','client').order('name').then(({data})=>setClients(data||[]));
+  },[]);
+
+  const onSelectClient = async (id) => {
+    setSelClient(id); setQuantities({}); setPriceItems([]); setPreview([]);
+    if (!id) return;
+    const items = await getPriceTableForClient(id);
+    setPriceItems(items);
+  };
+
+  const onQtyChange = (key, val) => {
+    const qty = Math.max(0, parseInt(val)||0);
+    const newQty = {...quantities, [key]: qty};
+    if (qty === 0) delete newQty[key];
+    setQuantities(newQty);
+    const ml = getSetting('multinivel',{total_pool:1.00});
+    const pool = +(ml.total_pool)||1.00;
+    const prev = [];
+    Object.entries(newQty).forEach(([k, q]) => {
+      if (q <= 0) return;
+      const item = priceItems.find(p=>(p.neighborhood_key||p.key)===k);
+      if (!item) return;
+      const cp  = +(item.client_price||item.cliente||0);
+      const crp = +(item.courier_price||item.entregador||0);
+      const gestora = Math.max(0, +(cp - crp - pool).toFixed(2));
+      prev.push({key:k, label:item.neighborhood_label||item.label, qty:q, cp, crp, gestora, pool});
+    });
+    setPreview(prev);
+  };
+
+  const totalQty     = preview.reduce((a,p)=>a+p.qty,0);
+  const totalCourier = preview.reduce((a,p)=>a+(p.crp*p.qty),0);
+  const totalClient  = preview.reduce((a,p)=>a+(p.cp*p.qty),0);
+  const totalGestora = preview.reduce((a,p)=>a+(p.gestora*p.qty),0);
+  const totalPool    = preview.reduce((a,p)=>a+(p.pool*p.qty),0);
+
+  const submit = async () => {
+    if (!selCourier) { toast('Selecione o entregador'); return; }
+    if (!selClient)  { toast('Selecione o cliente'); return; }
+    if (totalQty === 0) { toast('Informe ao menos 1 entrega'); return; }
+    setLoading(true);
+    const courier = couriers.find(x=>x.id===selCourier);
+    const client  = clients.find(x=>x.id===selClient);
+    const ml   = getSetting('multinivel',{total_pool:1.00,nivel1:0.70,nivel2_para_nivel1:0.70,nivel2_para_nivel0:0.30});
+    const pool = +(ml.total_pool)||1.00;
+    const L1   = +(ml.nivel1)||0.70;
+    const L2L0 = +(ml.nivel2_para_nivel0)||0.30;
+    const week = getWeekBounds(0);
+    const ws   = week.start.toISOString().slice(0,10);
+    const we   = week.end.toISOString().slice(0,10);
+    let created = 0;
+    for (const p of preview) {
+      for (let i = 0; i < p.qty; i++) {
+        const { data: order, error } = await db.from('orders').insert({
+          client_id:selClient, client_name:client?.name||'',
+          courier_id:selCourier, courier_name:courier?.name||'',
+          courier_number:courier?.courier_number||null,
+          pickup_addr:client?.address||'Manual',
+          delivery_addr:p.label, neighborhood:p.key,
+          item_desc:notes||'Entrega manual',
+          price:p.cp, courier_price:p.crp, gestora_amount:p.gestora,
+          status:'done',
+          created_at:new Date(date).toISOString(),
+          updated_at:new Date(date).toISOString(),
+        }).select().single();
+        if (error) { console.error(error); continue; }
+        created++;
+        if (courier?.referred_by) {
+          const {data:l1} = await db.from('users').select('id,name,can_refer,referred_by').eq('id',courier.referred_by).single();
+          if (l1?.can_refer) {
+            let dist=0;
+            await db.from('referral_bonuses').insert({earner_id:l1.id,earner_name:l1.name,source_courier_id:courier.id,source_courier_name:courier.name,order_id:order.id,level:1,amount:L1,week_start:ws,week_end:we});
+            dist+=L1;
+            if (l1.referred_by) {
+              const {data:l0} = await db.from('users').select('id,name,can_refer').eq('id',l1.referred_by).single();
+              if (l0?.can_refer) { await db.from('referral_bonuses').insert({earner_id:l0.id,earner_name:l0.name,source_courier_id:courier.id,source_courier_name:courier.name,order_id:order.id,level:0,amount:L2L0,week_start:ws,week_end:we}); dist+=L2L0; }
+            }
+            const remaining = Math.max(0,+(pool-dist).toFixed(2));
+            if (remaining>0) await db.from('orders').update({gestora_amount:p.gestora+remaining}).eq('id',order.id);
+          }
+        }
+      }
+    }
+    setLoading(false);
+    toast(created + (created!==1?' entregas registradas':' entrega registrada') + ' para ' + (courier?.name||'') + ' ✓');
+    setSelCourier(''); setSelClient(''); setQuantities({}); setPriceItems([]); setPreview([]); setNotes('');
+    setPage('admin-orders');
+  };
+
+  const btnLabel = loading ? 'Registrando...' : ('✓ Registrar ' + totalQty + (totalQty!==1?' entregas':' entrega'));
+
+  return <AdminShell page="admin-manual" setPage={setPage}>
+    <Topbar title="Entregas manuais" badge="Admin" badgeClass="ba"/>
+    <div className="scroll">
+      <div className="notice" style={{margin:'10px 14px',background:'var(--amber-l)',color:'var(--amber)',padding:'10px 13px',borderRadius:'var(--rs)',fontSize:13}}>
+        Registre entregas realizadas fora do app. Entram no repasse semanal e no multinível normalmente.
+      </div>
+      <div className="stitle">🛵 Entregador</div>
+      <div className="fgrp">
+        <select value={selCourier} onChange={e=>setSelCourier(e.target.value)}>
+          <option value="">— Selecione o entregador —</option>
+          {couriers.map(x=><option key={x.id} value={x.id}>{x.courier_number?('#'+x.courier_number+' '):''}{x.name}</option>)}
+        </select>
+      </div>
+      <div className="stitle">👤 Cliente</div>
+      <div className="fgrp">
+        <select value={selClient} onChange={e=>onSelectClient(e.target.value)}>
+          <option value="">— Selecione o cliente —</option>
+          {clients.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>
+      </div>
+      <div className="stitle">📅 Data das entregas</div>
+      <div className="fgrp"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+      {selClient && priceItems.length===0 && <div className="notice ne">Este cliente não tem tabela de preços. Configure em Config → Clientes.</div>}
+      {selClient && priceItems.length>0 && <>
+        <div className="stitle">📦 Quantidade por bairro/região</div>
+        <div style={{padding:'0 14px'}}>
+          {priceItems.map(item=>{
+            const key = item.neighborhood_key||item.key;
+            const qty = quantities[key]||0;
+            return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:500}}>{item.neighborhood_label||item.label}</div>
+                <div style={{fontSize:11,color:'var(--text2)'}}>Entregador recebe {fmtMoney(+(item.courier_price||item.entregador||0))} por entrega</div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <button onClick={()=>onQtyChange(key,qty-1)} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
+                <input type="number" min="0" value={qty||''} onChange={e=>onQtyChange(key,e.target.value)} placeholder="0" style={{width:52,textAlign:'center',padding:'5px 4px',fontSize:15,fontWeight:700}}/>
+                <button onClick={()=>onQtyChange(key,qty+1)} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:16,color:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center'}}>+</button>
+              </div>
+            </div>;
+          })}
+        </div>
+      </>}
+      <div className="stitle">📝 Observação (opcional)</div>
+      <div className="fgrp"><textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Ex: Entregas do dia 05/05 anotadas no caderno..." style={{height:60}}/></div>
+      {preview.length>0&&<>
+        <div className="stitle">📊 Resumo</div>
+        <div style={{margin:'0 14px 14px'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+            <thead><tr style={{background:'var(--bg2)'}}>
+              <th style={{textAlign:'left',padding:'8px',fontSize:11,color:'var(--text2)',textTransform:'uppercase',borderBottom:'1px solid var(--border)'}}>Bairro</th>
+              <th style={{textAlign:'center',padding:'8px',fontSize:11,color:'var(--text2)',textTransform:'uppercase',borderBottom:'1px solid var(--border)'}}>Qtd</th>
+              <th style={{textAlign:'center',padding:'8px',fontSize:11,color:'var(--green)',textTransform:'uppercase',borderBottom:'1px solid var(--border)'}}>Entregador</th>
+              <th style={{textAlign:'center',padding:'8px',fontSize:11,color:'var(--blue)',textTransform:'uppercase',borderBottom:'1px solid var(--border)'}}>Cliente</th>
+              <th style={{textAlign:'center',padding:'8px',fontSize:11,color:'var(--amber)',textTransform:'uppercase',borderBottom:'1px solid var(--border)'}}>Gestora</th>
+            </tr></thead>
+            <tbody>{preview.map((p,i)=><tr key={i} style={{borderBottom:'1px solid var(--border)',background:i%2===0?'var(--bg)':'var(--bg2)'}}>
+              <td style={{padding:'7px 8px',fontWeight:500}}>{p.label}</td>
+              <td style={{padding:'7px 8px',textAlign:'center',fontWeight:700}}>{p.qty}x</td>
+              <td style={{padding:'7px 8px',textAlign:'center',color:'var(--green)',fontWeight:600}}>{fmtMoney(p.crp*p.qty)}</td>
+              <td style={{padding:'7px 8px',textAlign:'center',color:'var(--blue)',fontWeight:600}}>{fmtMoney(p.cp*p.qty)}</td>
+              <td style={{padding:'7px 8px',textAlign:'center',color:'var(--amber)',fontWeight:600}}>{fmtMoney(p.gestora*p.qty)}</td>
+            </tr>)}</tbody>
+            <tfoot><tr style={{background:'var(--bg2)',fontWeight:700}}>
+              <td style={{padding:'9px 8px'}}>TOTAL</td>
+              <td style={{padding:'9px 8px',textAlign:'center'}}>{totalQty}x</td>
+              <td style={{padding:'9px 8px',textAlign:'center',color:'var(--green)'}}>{fmtMoney(totalCourier)}</td>
+              <td style={{padding:'9px 8px',textAlign:'center',color:'var(--blue)'}}>{fmtMoney(totalClient)}</td>
+              <td style={{padding:'9px 8px',textAlign:'center',color:'var(--amber)'}}>{fmtMoney(totalGestora)}</td>
+            </tr></tfoot>
+          </table>
+          <div style={{fontSize:11,color:'var(--text2)',marginTop:8}}>Pool multinível total: {fmtMoney(totalPool)} · Bônus distribuídos automaticamente.</div>
+        </div>
+      </>}
+      <button className="btn btn-blue" style={{margin:'6px 20px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading||totalQty===0}>{btnLabel}</button>
+    </div>
+  </AdminShell>;
+}
+
 function AdminMap({setPage}) {
   const [couriers, setCouriers] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -1403,7 +1864,27 @@ function AdminMap({setPage}) {
 }
 
 function AdminReports({setPage}) {
-  return <AdminShell page="admin" setPage={setPage}><Topbar title="Relatórios" badge="Admin" badgeClass="ba"/><div className="scroll"><div className="notice ni" style={{marginTop:12}}>Relatórios em breve.</div></div></AdminShell>;
+  return <AdminShell page="admin" setPage={setPage}>
+    <Topbar title="Início" badge="Admin" badgeClass="ba"/>
+    <div className="scroll">
+      <div style={{padding:'14px 14px 0'}}>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
+          {[
+            {icon:'➕',label:'Novo pedido',sub:'Criar via app',page:'admin-new',color:''},
+            {icon:'📋',label:'Entregas manuais',sub:'Registrar fora do app',page:'admin-manual',color:'amber'},
+            {icon:'🔍',label:'Ver pedidos',sub:'Todos os pedidos',page:'admin-orders',color:''},
+            {icon:'💰',label:'Financeiro',sub:'Repasses e cobranças',page:'admin-fin',color:''},
+            {icon:'🛵',label:'Equipe',sub:'Gerenciar entregadores',page:'admin-couriers',color:''},
+            {icon:'🗺️',label:'Mapa ao vivo',sub:'Posições em tempo real',page:'admin-map',color:''},
+          ].map(item=><div key={item.page} className="ocard" style={{cursor:'pointer',margin:0,textAlign:'center',padding:'16px 10px',borderColor:item.color?'var(--'+item.color+')':'',background:item.color?'var(--'+item.color+'-l)':''}} onClick={()=>setPage(item.page)}>
+            <div style={{fontSize:26,marginBottom:5}}>{item.icon}</div>
+            <div style={{fontSize:13,fontWeight:600}}>{item.label}</div>
+            <div style={{fontSize:11,color:item.color?'var(--'+item.color+')':'var(--text2)'}}>{item.sub}</div>
+          </div>)}
+        </div>
+      </div>
+    </div>
+  </AdminShell>;
 }
 
 function AdminOrders({setPage,setAllocId}) {
@@ -1649,6 +2130,9 @@ function App() {
     case 'courier-fin':   return <CourierFin setPage={setPage}/>;
     case 'admin':         return <AdminReports setPage={setPage}/>;
     case 'admin-couriers': return <AdminCouriers setPage={setPage}/>;
+    case 'admin-manual':   return <AdminManualDelivery setPage={setPage}/>;
+    case 'client-closing': return <ClientClosing setPage={setPage}/>;
+    case 'courier-closing':return <CourierClosing setPage={setPage}/>;
     case 'admin-map':      return <AdminMap setPage={setPage}/>;
     case 'admin-settings': return <AdminSettings setPage={setPage}/>;
     case 'admin-orders':  return <AdminOrders setPage={setPage} setAllocId={setAllocId}/>;
