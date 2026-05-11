@@ -1123,6 +1123,7 @@ function CourierDash({setPage}) {
     <div className="tabbar">
       <button className="tab-item active"><span className="tab-icon">🛵</span><span>Pedidos</span></button>
       <button className="tab-item" onClick={()=>setPage('courier-card')}><span className="tab-icon">⭐</span><span>Card</span></button>
+      <button className="tab-item" onClick={()=>setPage('courier-shifts')}><span className="tab-icon">📅</span><span>Turnos</span></button>
       <button className="tab-item" onClick={()=>setPage('courier-closing')}><span className="tab-icon">✅</span><span>Fechamento</span></button>
       <button className="tab-item" onClick={()=>setPage('courier-fin')}><span className="tab-icon">💰</span><span>Financeiro</span></button>
       <button className="tab-item" onClick={()=>setPage('profile')}><span className="tab-icon">👤</span><span>Perfil</span></button>
@@ -1443,6 +1444,376 @@ function AdminSettings({setPage}) {
   </div>;
 }
 
+
+// ===== ADMIN SHIFTS =====
+function AdminShifts({setPage}) {
+  const toast = useToast();
+  const [clients, setClients] = useState([]);
+  const [selClient, setSelClient] = useState('');
+  const [shifts, setShifts] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [view, setView] = useState('list'); // list | create
+  // Create form
+  const [form, setForm] = useState({date:'', start:'17:00', end:'23:00', slots:1, notes:''});
+  const [creating, setCreating] = useState(false);
+  // Assignments
+  const [assignments, setAssignments] = useState({});
+  const [couriers, setCouriers] = useState([]);
+  const [expandShift, setExpandShift] = useState(null);
+
+  useEffect(()=>{
+    db.from('users').select('id,name').eq('role','client').order('name').then(({data})=>setClients(data||[]));
+    db.from('users').select('id,name,courier_number').eq('role','courier').order('name').then(({data})=>setCouriers(data||[]));
+  },[]);
+
+  useEffect(()=>{ if(selClient) loadShifts(); },[selClient]);
+
+  const loadShifts = async () => {
+    if (!selClient) return;
+    setLoading(true);
+    const today = new Date().toISOString().slice(0,10);
+    const {data} = await db.from('shifts').select('*').eq('client_id',selClient).gte('date',today).order('date').order('start_time');
+    const shiftList = data||[];
+    setShifts(shiftList);
+    // Load assignments for each shift
+    if (shiftList.length) {
+      const ids = shiftList.map(s=>s.id);
+      const {data:ass} = await db.from('shift_assignments').select('*').in('shift_id',ids);
+      const map = {};
+      (ass||[]).forEach(a=>{ if(!map[a.shift_id]) map[a.shift_id]=[]; map[a.shift_id].push(a); });
+      setAssignments(map);
+    }
+    setLoading(false);
+  };
+
+  const createShift = async () => {
+    if (!selClient||!form.date||!form.start||!form.end) { toast('Preencha todos os campos'); return; }
+    setCreating(true);
+    const client = clients.find(x=>x.id===selClient);
+    await db.from('shifts').insert({client_id:selClient,client_name:client?.name||'',date:form.date,start_time:form.start,end_time:form.end,slots:+form.slots,notes:form.notes});
+    setCreating(false);
+    toast('Turno criado ✓');
+    setView('list');
+    loadShifts();
+  };
+
+  const createWeekShifts = async (pattern) => {
+    // pattern: [{days:[1,2,3,4], slots:5, start:'17:00', end:'23:00'}, ...]
+    setCreating(true);
+    const client = clients.find(x=>x.id===selClient);
+    const today = new Date();
+    const rows = [];
+    for (let i=0; i<14; i++) {
+      const d = new Date(today); d.setDate(today.getDate()+i);
+      const dow = d.getDay(); // 0=sun,1=mon...
+      for (const p of pattern) {
+        if (p.days.includes(dow)) {
+          rows.push({client_id:selClient,client_name:client?.name||'',date:d.toISOString().slice(0,10),start_time:p.start,end_time:p.end,slots:p.slots,notes:''});
+        }
+      }
+    }
+    if (rows.length) await db.from('shifts').insert(rows);
+    setCreating(false);
+    toast(rows.length+' turnos criados para as próximas 2 semanas ✓');
+    setView('list');
+    loadShifts();
+  };
+
+  const assignCourier = async (shiftId, courierId) => {
+    if (!courierId) return;
+    const courier = couriers.find(x=>x.id===courierId);
+    const existing = (assignments[shiftId]||[]).find(a=>a.courier_id===courierId);
+    if (existing) { toast('Entregador já alocado neste turno'); return; }
+    const shift = shifts.find(s=>s.id===shiftId);
+    const filled = (assignments[shiftId]||[]).filter(a=>a.status!=='cancelled').length;
+    if (filled >= (shift?.slots||1)) { toast('Turno já está completo'); return; }
+    await db.from('shift_assignments').insert({shift_id:shiftId,courier_id:courierId,courier_name:courier?.name||'',courier_number:courier?.courier_number||null,status:'confirmed',assigned_by:'admin'});
+    toast(courier?.name+' alocado ✓');
+    loadShifts();
+  };
+
+  const markStatus = async (ass, status) => {
+    await db.from('shift_assignments').update({status}).eq('id',ass.id);
+    // If marking absent or cancelling a confirmed slot, promote from waitlist
+    if ((status==='absent'||status==='cancelled') && !ass.waitlist_position) {
+      const {data:waiters} = await db.from('shift_assignments').select('*').eq('shift_id',ass.shift_id).eq('status','waitlist').order('waitlist_position').limit(1);
+      if (waiters?.length) {
+        const first = waiters[0];
+        await db.from('shift_assignments').update({status:'confirmed',waitlist_position:null,notified_at:new Date().toISOString()}).eq('id',first.id);
+        toast((status==='absent'?'Falta registrada':'Cancelado')+'. '+first.courier_name+' promovido da fila! ✓');
+      } else {
+        toast(status==='present'?'Presença confirmada ✓':status==='absent'?'Falta registrada':'Cancelado');
+      }
+    } else {
+      toast(status==='present'?'Presença confirmada ✓':status==='absent'?'Falta registrada':'Cancelado');
+    }
+    loadShifts();
+  };
+
+  const removeShift = async (id) => {
+    if (!confirm('Remover este turno?')) return;
+    await db.from('shifts').delete().eq('id',id);
+    toast('Turno removido');
+    loadShifts();
+  };
+
+  const statusColor = {confirmed:'var(--blue)',present:'var(--green)',absent:'var(--red)',cancelled:'var(--text2)',waitlist:'var(--amber)'};
+  const statusLabel = {confirmed:'Confirmado',present:'Presente',absent:'Faltou',cancelled:'Cancelado',waitlist:'Fila #'};
+  const statusBg    = {confirmed:'var(--blue-l)',present:'var(--green-l)',absent:'var(--red-l)',cancelled:'var(--bg2)',waitlist:'var(--amber-l)'};
+
+  const DAYS_SHORT = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const fmtDay = d => { const dt=new Date(d+'T12:00:00'); return DAYS_SHORT[dt.getDay()]+' '+dt.getDate()+'/'+String(dt.getMonth()+1).padStart(2,'0'); };
+
+  return <AdminShell page="admin-shifts" setPage={setPage}>
+    <Topbar title="Escala de turnos" badge="Admin" badgeClass="ba">
+      <button className="btn-sm" onClick={()=>setView(view==='list'?'create':'list')} style={{marginLeft:'auto'}}>{view==='list'?'+ Novo turno':'← Voltar'}</button>
+    </Topbar>
+    <div className="scroll">
+
+      <div className="fgrp" style={{padding:'12px 14px 8px'}}>
+        <select value={selClient} onChange={e=>setSelClient(e.target.value)}>
+          <option value="">— Selecione o cliente —</option>
+          {clients.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>
+      </div>
+
+      {/* CREATE VIEW */}
+      {view==='create'&&selClient&&<div style={{padding:'0 14px'}}>
+        <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:12}}>Turno único</div>
+        <div style={{display:'flex',gap:8,marginBottom:8}}>
+          <div style={{flex:1}}><label className="flabel">Data</label><input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></div>
+          <div style={{flex:1}}><label className="flabel">Vagas</label><input type="number" min="1" value={form.slots} onChange={e=>setForm({...form,slots:+e.target.value})}/></div>
+        </div>
+        <div style={{display:'flex',gap:8,marginBottom:8}}>
+          <div style={{flex:1}}><label className="flabel">Início</label><input type="time" value={form.start} onChange={e=>setForm({...form,start:e.target.value})}/></div>
+          <div style={{flex:1}}><label className="flabel">Término</label><input type="time" value={form.end} onChange={e=>setForm({...form,end:e.target.value})}/></div>
+        </div>
+        <div style={{marginBottom:12}}><label className="flabel">Observação</label><input value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} placeholder="Opcional"/></div>
+        <button className="btn btn-blue" style={{marginBottom:20}} onClick={createShift} disabled={creating}>{creating?'Criando...':'Criar turno'}</button>
+
+        <div style={{height:1,background:'var(--border)',margin:'0 0 16px'}}/>
+        <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:12}}>Escala recorrente (2 semanas)</div>
+        <div style={{fontSize:13,color:'var(--text2)',marginBottom:12}}>Cria turnos automaticamente para seg–qui e sex–dom, como no seu exemplo:</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn-sm accept" style={{padding:'10px 14px',fontSize:13}} onClick={()=>createWeekShifts([{days:[1,2,3,4],slots:5,start:'17:00',end:'23:00'},{days:[5,6,0],slots:15,start:'17:00',end:'23:00'}])} disabled={creating}>
+            Padrão Seg–Qui 5 vagas / Sex–Dom 15 vagas (17h–23h)
+          </button>
+        </div>
+        <div style={{fontSize:11,color:'var(--text2)',marginTop:8}}>Quer um padrão diferente? Crie turnos individuais acima.</div>
+      </div>}
+
+      {/* LIST VIEW */}
+      {view==='list'&&selClient&&<>
+        {loading?<Loading/>:shifts.length===0?<Empty icon="📅" text="Nenhum turno futuro. Crie o primeiro!"/>:
+          shifts.map(s=>{
+            const ass=assignments[s.id]||[];
+            const active=ass.filter(a=>a.status!=='cancelled');
+            const filled=active.length;
+            const pct=Math.round(filled/s.slots*100);
+            const isExpanded=expandShift===s.id;
+            return <div key={s.id} className="ocard" style={{margin:'0 14px 8px'}}>
+              <div style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:8}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700}}>{fmtDay(s.date)}</div>
+                  <div style={{fontSize:12,color:'var(--text2)'}}>{s.start_time} – {s.end_time}{s.notes?' · '+s.notes:''}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontSize:13,fontWeight:700,color:filled>=s.slots?'var(--green)':filled>0?'var(--amber)':'var(--red)'}}>{filled}/{s.slots} vagas</div>
+                  <div style={{fontSize:11,color:'var(--text2)'}}>{filled>=s.slots?'Completo':s.slots-filled+' em aberto'}</div>
+                </div>
+                <button onClick={()=>setExpandShift(isExpanded?null:s.id)} style={{background:'none',border:'none',cursor:'pointer',fontSize:16,color:'var(--text2)',padding:'2px 4px'}}>{isExpanded?'▲':'▼'}</button>
+              </div>
+              {/* Progress bar */}
+              <div style={{height:5,background:'var(--bg2)',borderRadius:3,overflow:'hidden',marginBottom:8}}>
+                <div style={{height:'100%',width:Math.min(100,pct)+'%',background:pct>=100?'var(--green)':pct>0?'var(--blue)':'var(--red)',borderRadius:3}}></div>
+              </div>
+              {/* Assigned couriers chips */}
+              <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                {active.filter(a=>!a.waitlist_position).map(a=><span key={a.id} style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:statusBg[a.status],color:statusColor[a.status],fontWeight:600}}>
+                  {a.courier_number?'#'+a.courier_number+' ':''}{a.courier_name?.split(' ')[0]}
+                </span>)}
+                {filled<s.slots&&Array.from({length:s.slots-filled}).map((_,i)=><span key={'empty'+i} style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:'var(--bg2)',color:'var(--text2)',border:'1px dashed var(--border)'}}>vaga</span>)}
+                {active.filter(a=>a.waitlist_position).slice(0,3).map(a=><span key={a.id} style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:'var(--amber-l)',color:'var(--amber)',fontWeight:600}}>
+                  ⏳{a.waitlist_position} {a.courier_name?.split(' ')[0]}
+                </span>)}
+              </div>
+
+              {isExpanded&&<div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:12}}>
+                {/* Assign courier */}
+                <div style={{display:'flex',gap:8,marginBottom:12}}>
+                  <select id={'sel-'+s.id} style={{flex:1,fontSize:13,padding:'6px 10px'}} defaultValue="">
+                    <option value="">Alocar entregador...</option>
+                    {couriers.filter(co=>!(assignments[s.id]||[]).find(a=>a.courier_id===co.id&&a.status!=='cancelled')).map(co=><option key={co.id} value={co.id}>{co.courier_number?'#'+co.courier_number+' ':''}{co.name}</option>)}
+                  </select>
+                  <button className="btn-sm accept" onClick={()=>{ const sel=document.getElementById('sel-'+s.id); if(sel.value) assignCourier(s.id,sel.value); }}>Alocar</button>
+                </div>
+                {/* Assignment list with status controls */}
+                {ass.map(a=><div key={a.id} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:500}}>{a.courier_number?'#'+a.courier_number+' ':''}{a.courier_name}</div>
+                    <div style={{fontSize:11,color:statusColor[a.status],fontWeight:600}}>{statusLabel[a.status]}</div>
+                  </div>
+                  <div style={{display:'flex',gap:5}}>
+                    {a.status!=='present'&&a.status!=='waitlist'&&<button className="btn-sm progress" style={{fontSize:11,padding:'4px 8px'}} onClick={()=>markStatus(a,'present')}>✓ pres.</button>}
+                    {a.status!=='absent'&&a.status!=='waitlist'&&<button className="btn-sm danger" style={{fontSize:11,padding:'4px 8px'}} onClick={()=>markStatus(a,'absent')}>✗ falta</button>}
+                    {a.status!=='cancelled'&&<button className="btn-sm" style={{fontSize:11,padding:'4px 8px'}} onClick={()=>markStatus(a,'cancelled')}>× canc.</button>}
+                  </div>
+                </div>)}
+                <button className="btn-sm danger" style={{marginTop:10,fontSize:11}} onClick={()=>removeShift(s.id)}>🗑 Remover turno</button>
+              </div>}
+            </div>;
+          })
+        }
+      </>}
+    </div>
+  </AdminShell>;
+}
+
+// ===== COURIER SHIFTS =====
+function CourierShifts({setPage}) {
+  const {profile} = useAuth(); const toast = useToast();
+  const [shifts, setShifts] = useState([]);
+  const [myShifts, setMyShifts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('available');
+
+  useEffect(()=>{ load(); },[profile]);
+
+  const load = async () => {
+    if (!profile) return;
+    setLoading(true);
+    const today = new Date().toISOString().slice(0,10);
+    // All future shifts
+    const {data:allShifts} = await db.from('shifts').select('*').gte('date',today).order('date').order('start_time');
+    // My assignments
+    const {data:myAss} = await db.from('shift_assignments').select('*,shifts(*)').eq('courier_id',profile.id).gte('shifts.date',today);
+    // All assignments to check availability
+    const ids=(allShifts||[]).map(s=>s.id);
+    let assMap={};
+    if(ids.length){
+      const {data:allAss}=await db.from('shift_assignments').select('shift_id,status').in('shift_id',ids);
+      (allAss||[]).forEach(a=>{if(!assMap[a.shift_id])assMap[a.shift_id]=[];assMap[a.shift_id].push(a);});
+    }
+    // Filter available (not full, not already signed up)
+    const myShiftIds=new Set((myAss||[]).filter(a=>a.status!=='cancelled').map(a=>a.shift_id));
+    const available=(allShifts||[]).filter(s=>{
+      if(myShiftIds.has(s.id)) return false;
+      const confirmed=(assMap[s.id]||[]).filter(a=>a.status!=='cancelled'&&!a.waitlist_position).length;
+      s._filled=confirmed;
+      return true; // show all, including waitlist slots
+    });
+    setShifts(available);
+    setMyShifts((myAss||[]).filter(a=>a.shifts));
+    setLoading(false);
+  };
+
+  const signup = async (shift) => {
+    // Check current fill
+    const {data:current} = await db.from('shift_assignments').select('id,status,waitlist_position').eq('shift_id',shift.id).neq('status','cancelled');
+    const filled = (current||[]).filter(a=>!a.waitlist_position).length;
+    const isWaitlist = filled >= shift.slots;
+    // Get next waitlist position
+    let waitPos = null;
+    if (isWaitlist) {
+      const waiters = (current||[]).filter(a=>a.waitlist_position).sort((a,b)=>a.waitlist_position-b.waitlist_position);
+      waitPos = waiters.length > 0 ? waiters[waiters.length-1].waitlist_position + 1 : 1;
+    }
+    await db.from('shift_assignments').insert({
+      shift_id:shift.id, courier_id:profile.id, courier_name:profile.name,
+      courier_number:profile.courier_number||null,
+      status: isWaitlist ? 'waitlist' : 'confirmed',
+      assigned_by:'courier',
+      waitlist_position: waitPos
+    });
+    if (isWaitlist) toast('Turno completo! Você entrou na fila de espera #'+waitPos+' 📋');
+    else toast('Vaga confirmada! ✓');
+    load();
+  };
+
+  const promoteFromWaitlist = async (shiftId) => {
+    // Get first in waitlist
+    const {data:waiters} = await db.from('shift_assignments').select('*').eq('shift_id',shiftId).eq('status','waitlist').order('waitlist_position').limit(1);
+    if (!waiters?.length) return;
+    const first = waiters[0];
+    await db.from('shift_assignments').update({status:'confirmed', waitlist_position:null, notified_at:new Date().toISOString()}).eq('id',first.id);
+    return first.courier_name;
+  };
+
+  const cancel = async (ass) => {
+    if (!confirm('Cancelar sua presença neste turno?')) return;
+    await db.from('shift_assignments').update({status:'cancelled'}).eq('id',ass.id);
+    // If was confirmed (not waitlist), promote next in line
+    if (!ass.waitlist_position) {
+      const promoted = await promoteFromWaitlist(ass.shift_id);
+      if (promoted) toast('Presença cancelada. '+promoted+' foi promovido da fila de espera!');
+      else toast('Presença cancelada');
+    } else {
+      toast('Removido da fila de espera');
+    }
+    load();
+  };
+
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const fmtDay = d => { const dt=new Date(d+'T12:00:00'); return DAYS[dt.getDay()]+' '+dt.getDate()+'/'+String(dt.getMonth()+1).padStart(2,'0'); };
+  const statusColor={confirmed:'var(--blue)',present:'var(--green)',absent:'var(--red)',cancelled:'var(--text2)',waitlist:'var(--amber)'};
+  const statusLabel={confirmed:'Confirmado',present:'Presente',absent:'Faltou',cancelled:'Cancelado',waitlist:'Fila de espera'};
+
+  const ts=t=>({padding:'9px 14px',fontSize:13,fontWeight:tab===t?600:400,cursor:'pointer',color:tab===t?'var(--blue)':'var(--text2)',borderBottom:tab===t?'2px solid var(--blue)':'2px solid transparent',background:'none',border:'none',borderBottom:tab===t?'2px solid var(--blue)':'2px solid transparent',fontFamily:'var(--font)'});
+
+  return <div className="screen">
+    <Topbar title="Turnos disponíveis" onBack={()=>setPage('courier')} badge="Entregador" badgeClass="bd"/>
+    <div className="scroll">
+      <div style={{display:'flex',borderBottom:'1px solid var(--border)'}}>
+        <button style={ts('available')} onClick={()=>setTab('available')}>Vagas abertas</button>
+        <button style={ts('mine')} onClick={()=>setTab('mine')}>Meus turnos</button>
+      </div>
+
+      {loading?<Loading/>:<>
+        {tab==='available'&&<>
+          {shifts.length===0?<Empty icon="📅" text="Nenhuma vaga disponível no momento."/>:
+            shifts.map(s=><div key={s.id} className="ocard" style={{margin:'8px 14px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:700}}>{fmtDay(s.date)}</div>
+                  <div style={{fontSize:12,color:'var(--text2)'}}>{s.start_time} – {s.end_time}</div>
+                  <div style={{fontSize:12,color:'var(--text2)',marginTop:2}}>👤 {s.client_name}{s.notes?' · '+s.notes:''}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontSize:12,fontWeight:600,color:s._filled>=s.slots?'var(--amber)':'var(--green)'}}>{s._filled>=s.slots?'Fila de espera':'Vagas abertas'}</div>
+                  <div style={{fontSize:11,color:'var(--text2)',marginTop:2}}>{s._filled}/{s.slots} preenchidas</div>
+                </div>
+              </div>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <button className="btn-sm accept" style={{flex:1,padding:'9px',fontSize:13}} onClick={()=>signup(s)}>Confirmar presença</button>
+                {s._filled>=s.slots&&<span style={{fontSize:11,padding:'3px 9px',borderRadius:20,background:'var(--amber-l)',color:'var(--amber)',fontWeight:600,whiteSpace:'nowrap'}}>Fila de espera</span>}
+              </div>
+            </div>)
+          }
+        </>}
+
+        {tab==='mine'&&<>
+          {myShifts.length===0?<Empty icon="📋" text="Você ainda não tem turnos confirmados."/>:
+            myShifts.sort((a,b)=>a.shifts.date.localeCompare(b.shifts.date)).map(a=><div key={a.id} className="ocard" style={{margin:'8px 14px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:700}}>{fmtDay(a.shifts.date)}</div>
+                  <div style={{fontSize:12,color:'var(--text2)'}}>{a.shifts.start_time} – {a.shifts.end_time}</div>
+                  <div style={{fontSize:12,color:'var(--text2)',marginTop:2}}>👤 {a.shifts.client_name}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:a.status==='present'?'var(--green-l)':a.status==='absent'?'var(--red-l)':a.status==='cancelled'?'var(--bg2)':a.status==='waitlist'?'var(--amber-l)':'var(--blue-l)',color:statusColor[a.status]}}>{a.status==='waitlist'?'Fila #'+a.waitlist_position:statusLabel[a.status]}</span>
+                  {a.notified_at&&a.status==='confirmed'&&<div style={{fontSize:10,color:'var(--green)',marginTop:3}}>★ Promovido da fila!</div>}
+                </div>
+              </div>
+              {(a.status==='confirmed'||a.status==='waitlist')&&<button className="btn-sm danger" style={{marginTop:10,width:'100%',padding:'7px',fontSize:12}} onClick={()=>cancel(a)}>{a.status==='waitlist'?'Sair da fila de espera':'Cancelar minha presença'}</button>}
+            </div>)
+          }
+        </>}
+      </>}
+    </div>
+  </div>;
+}
+
 function AdminShell({children,page,setPage}) {
   return <div className="screen">{children}
     <div className="tabbar">
@@ -1450,6 +1821,7 @@ function AdminShell({children,page,setPage}) {
       <button className={`tab-item ${page==='admin-orders'?'active':''}`} onClick={()=>setPage('admin-orders')}><span className="tab-icon">📋</span><span>Pedidos</span></button>
       <button className={`tab-item ${page==='admin-new'||page==='admin-manual'?'active':''}`} onClick={()=>setPage('admin-new')}><span className="tab-icon">➕</span><span>Novo</span></button>
       <button className={`tab-item ${page==='admin-couriers'?'active':''}`} onClick={()=>setPage('admin-couriers')}><span className="tab-icon">🛵</span><span>Equipe</span></button>
+      <button className={`tab-item ${page==='admin-shifts'?'active':''}`} onClick={()=>setPage('admin-shifts')}><span className="tab-icon">📅</span><span>Escala</span></button>
       <button className={`tab-item ${page==='admin-map'?'active':''}`} onClick={()=>setPage('admin-map')}><span className="tab-icon">🗺️</span><span>Mapa</span></button>
       <button className={`tab-item ${page==='admin-fin'?'active':''}`} onClick={()=>setPage('admin-fin')}><span className="tab-icon">💰</span><span>Finanças</span></button>
       <button className={`tab-item ${page==='admin-settings'?'active':''}`} onClick={()=>setPage('admin-settings')}><span className="tab-icon">⚙️</span><span>Config</span></button>
@@ -2325,7 +2697,9 @@ function App() {
     case 'admin-couriers': return <AdminCouriers setPage={setPage}/>;
     case 'admin-manual':   return <AdminManualDelivery setPage={setPage}/>;
     case 'client-closing': return <ClientClosing setPage={setPage}/>;
+    case 'admin-shifts':   return <AdminShifts setPage={setPage}/>;
     case 'courier-card':   return <CourierCard setPage={setPage}/>
+    case 'courier-shifts': return <CourierShifts setPage={setPage}/>;
     case 'courier-closing':return <CourierClosing setPage={setPage}/>;
     case 'admin-map':      return <AdminMap setPage={setPage}/>;
     case 'admin-settings': return <AdminSettings setPage={setPage}/>;
