@@ -10,25 +10,10 @@
 <meta name="apple-mobile-web-app-title" content="Entregou">
 <meta name="description" content="Plataforma de coleta e entrega em tempo real para Niterói">
 <meta name="application-name" content="Entregou">
-<link rel="manifest" href="data:application/json,{
-  &quot;name&quot;: &quot;Entregou&quot;,
-  &quot;short_name&quot;: &quot;Entregou&quot;,
-  &quot;description&quot;: &quot;Coleta e entrega em tempo real&quot;,
-  &quot;start_url&quot;: &quot;.&quot;,
-  &quot;display&quot;: &quot;standalone&quot;,
-  &quot;background_color&quot;: &quot;#ffffff&quot;,
-  &quot;theme_color&quot;: &quot;#185FA5&quot;,
-  &quot;orientation&quot;: &quot;portrait&quot;,
-  &quot;icons&quot;: [
-    { &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'&gt;&lt;rect width='192' height='192' rx='36' fill='%23185FA5'/&gt;&lt;text x='50%25' y='55%25' font-size='110' text-anchor='middle' dominant-baseline='middle'&gt;📦&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;192x192&quot;, &quot;type&quot;: &quot;image/svg+xml&quot;, &quot;purpose&quot;: &quot;any maskable&quot; },
-    { &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'&gt;&lt;rect width='512' height='512' rx='96' fill='%23185FA5'/&gt;&lt;text x='50%25' y='55%25' font-size='300' text-anchor='middle' dominant-baseline='middle'&gt;📦&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;512x512&quot;, &quot;type&quot;: &quot;image/svg+xml&quot;, &quot;purpose&quot;: &quot;any maskable&quot; }
-  ],
-  &quot;categories&quot;: [&quot;business&quot;, &quot;logistics&quot;],
-  &quot;shortcuts&quot;: [
-    { &quot;name&quot;: &quot;Novo pedido&quot;, &quot;short_name&quot;: &quot;Pedir&quot;, &quot;url&quot;: &quot;.?role=client&quot;, &quot;icons&quot;: [{ &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'&gt;&lt;text y='80' font-size='80'&gt;➕&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;96x96&quot; }] },
-    { &quot;name&quot;: &quot;Entregar&quot;, &quot;short_name&quot;: &quot;Entregar&quot;, &quot;url&quot;: &quot;.?role=courier&quot;, &quot;icons&quot;: [{ &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'&gt;&lt;text y='80' font-size='80'&gt;🛵&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;96x96&quot; }] }
-  ]
-}">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png">
 <title>Entregou</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -3105,32 +3090,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 <script>
 // ===== SERVICE WORKER (PWA offline support) =====
 if ('serviceWorker' in navigator) {
-  const swCode = `
-    const CACHE = 'entregou-v1';
-    const ASSETS = [
-      self.location.pathname,
-      'https://unpkg.com/react@18/umd/react.production.min.js',
-      'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-      'https://unpkg.com/@babel/standalone/babel.min.js',
-      'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
-    ];
-    self.addEventListener('install', e => {
-      e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS).catch(()=>{})));
-      self.skipWaiting();
-    });
-    self.addEventListener('activate', e => {
-      e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));
-    });
-    self.addEventListener('fetch', e => {
-      if (e.request.method !== 'GET') return;
-      e.respondWith(
-        fetch(e.request).catch(() => caches.match(e.request))
-      );
-    });
-  `;
-  const blob = new Blob([swCode], {type:'application/javascript'});
-  const swUrl = URL.createObjectURL(blob);
-  navigator.serviceWorker.register(swUrl).catch(()=>{});
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
 
 // ===== INSTALL PROMPT =====
