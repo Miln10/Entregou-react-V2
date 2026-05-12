@@ -101,6 +101,8 @@ textarea{resize:none;height:72px;line-height:1.5;}
 .ropt-icon{font-size:18px;margin-bottom:3px;}
 .ropt-label{font-size:11px;font-weight:600;color:var(--text);}
 .toast-wrap{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:999;pointer-events:none;display:flex;flex-direction:column;gap:8px;align-items:center;}
+.fab{position:fixed;bottom:90px;right:16px;width:42px;height:42px;border-radius:50%;background:var(--blue);color:white;border:none;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 12px rgba(24,95,165,.4);z-index:100;transition:transform .15s;}
+.fab:hover{transform:scale(1.1);}
 .toast{background:#1a1a1a;color:#fff;padding:9px 18px;border-radius:20px;font-size:13px;font-weight:600;white-space:nowrap;max-width:90vw;text-align:center;animation:fadeInOut 3s ease forwards;}
 @keyframes fadeInOut{0%{opacity:0;transform:translateY(8px)}10%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0}}
 </style>
@@ -322,6 +324,85 @@ function LiveMap({courierLat,courierLng,courierName,status}) {
 // ===== SOUND =====
 function playAlert() {
   try { const ctx=new(window.AudioContext||window.webkitAudioContext)(); const play=(f,s,d)=>{const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(0,ctx.currentTime+s);g.gain.linearRampToValueAtTime(0.4,ctx.currentTime+s+0.01);g.gain.linearRampToValueAtTime(0,ctx.currentTime+s+d);o.start(ctx.currentTime+s);o.stop(ctx.currentTime+s+d+0.05);};play(520,0,0.12);play(660,0.15,0.12);play(800,0.30,0.20); } catch(e) {}
+}
+
+
+// ===== NAV DRAWER =====
+function NavDrawer({profile, page, setPage, onClose}) {
+  if (!profile) return null;
+
+  const adminItems = [
+    {icon:'📊',label:'Início',page:'admin'},
+    {icon:'📋',label:'Pedidos',page:'admin-orders'},
+    {icon:'➕',label:'Novo pedido',page:'admin-new'},
+    {icon:'📋',label:'Entregas manuais',page:'admin-manual'},
+    {icon:'🏪',label:'Novo cliente',page:'admin-new-client'},
+    {icon:'🛵',label:'Equipe',page:'admin-couriers'},
+    {icon:'📅',label:'Escala',page:'admin-shifts'},
+    {icon:'🗺️',label:'Mapa ao vivo',page:'admin-map'},
+    {icon:'💰',label:'Financeiro',page:'admin-fin'},
+    {icon:'⚙️',label:'Configurações',page:'admin-settings'},
+    {icon:'👤',label:'Perfil',page:'profile'},
+  ];
+
+  const clientItems = [
+    {icon:'➕',label:'Novo pedido',page:'new-order'},
+    {icon:'📋',label:'Meus pedidos',page:'client-orders'},
+    {icon:'✅',label:'Fechamento',page:'client-closing'},
+    {icon:'👤',label:'Perfil',page:'profile'},
+  ];
+
+  const courierItems = [
+    {icon:'🛵',label:'Painel',page:'courier'},
+    {icon:'⭐',label:'Meu card',page:'courier-card'},
+    {icon:'📅',label:'Turnos',page:'courier-shifts'},
+    {icon:'✅',label:'Fechamento',page:'courier-closing'},
+    {icon:'💰',label:'Financeiro',page:'courier-fin'},
+    {icon:'👤',label:'Perfil',page:'profile'},
+  ];
+
+  const items = profile.role==='admin' ? adminItems : profile.role==='client' ? clientItems : courierItems;
+  const roleLabel = {admin:'Admin',client:'Cliente',courier:'Entregador'};
+  const roleCls = {admin:'ba',client:'bc',courier:'bd'};
+
+  return <>
+    {/* Backdrop */}
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.4)',zIndex:300}}/>
+    {/* Drawer */}
+    <div style={{position:'fixed',top:0,right:0,bottom:0,width:260,background:'var(--bg)',zIndex:301,boxShadow:'-4px 0 24px rgba(0,0,0,.15)',display:'flex',flexDirection:'column'}}>
+      {/* Header */}
+      <div style={{padding:'20px 18px 14px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:15,fontWeight:700}}>{profile.name}</div>
+          <div style={{fontSize:12,color:'var(--text2)',marginTop:2}}>{profile.email}</div>
+        </div>
+        <span className={`rbadge ${roleCls[profile.role]}`}>{roleLabel[profile.role]}</span>
+        <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',fontSize:20,color:'var(--text2)',padding:'0 0 0 6px'}}>✕</button>
+      </div>
+      {/* Nav items */}
+      <div style={{flex:1,overflowY:'auto',padding:'8px 0'}}>
+        {items.map(item=><button key={item.page} onClick={()=>{setPage(item.page);onClose();}} style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'12px 18px',border:'none',background:page===item.page?'var(--blue-l)':'transparent',cursor:'pointer',fontFamily:'var(--font)',textAlign:'left',borderLeft:page===item.page?'3px solid var(--blue)':'3px solid transparent'}}>
+          <span style={{fontSize:18,flexShrink:0}}>{item.icon}</span>
+          <span style={{fontSize:14,fontWeight:page===item.page?600:400,color:page===item.page?'var(--blue)':'var(--text)'}}>{item.label}</span>
+        </button>)}
+      </div>
+    </div>
+  </>;
+}
+
+// Wrapper to add hamburger to any Topbar
+function TopbarWithMenu({title, onBack, badge, badgeClass, children, page, setPage, profile}) {
+  const [open, setOpen] = useState(false);
+  return <>
+    {open && <NavDrawer profile={profile} page={page} setPage={setPage} onClose={()=>setOpen(false)}/>}
+    <div className="topbar">
+      {onBack&&<button className="back-btn" onClick={onBack}>‹</button>}
+      <h2>{title}</h2>
+      {badge&&<span className={`rbadge ${badgeClass||'bc'}`}>{badge}</span>}
+      {children}
+      <button onClick={()=>setOpen(true)} style={{marginLeft:'auto',background:'none',border:'1px solid var(--border)',borderRadius:'var(--rs)',padding:'5px 9px',cursor:'pointer',fontSize:16,color:'var(--text2)',flexShrink:0}}>☰</button>
+    </div>
+  </>;
 }
 
 // ===== AUTH PAGE =====
@@ -768,19 +849,23 @@ function CourierClosing({setPage}) {
 
 function ClientOrders({setPage,setTrackId}) {
   const {profile}=useAuth(); const [orders,setOrders]=useState([]); const [loading,setLoading]=useState(true);
-  const load=useCallback(async()=>{if(!profile)return;const{data}=await db.from('orders').select('*').eq('client_id',profile.id).order('created_at',{ascending:false}).limit(40);setOrders(data||[]);setLoading(false);},[profile]);
+  const load=useCallback(async()=>{if(!profile)return;const{data}=await db.from('orders').select('*').eq('client_id',profile.id).order('created_at',{ascending:false}).limit(100);setOrders(data||[]);setLoading(false);},[profile]);
   useEffect(()=>{load();},[load]);
   useEffect(()=>{if(!profile)return;const sub=db.channel('co').on('postgres_changes',{event:'*',schema:'public',table:'orders'},load).subscribe();return()=>db.removeChannel(sub);},[profile,load]);
   return <div className="screen">
     <Topbar title={<><span className="rdot"></span>Meus pedidos</>} badge={profile?.name?.split(' ')[0]} badgeClass="bc"/>
     <div className="scroll">
-      {loading?<Loading/>:orders.length===0?<Empty icon="📦" text="Nenhum pedido ainda. Crie seu primeiro!"/>:
-        orders.map(o=><OrderCard key={o.id} order={o} actions={
-          ['waiting','accepted','collecting','delivering'].includes(o.status)
-            ?[<button key="t" className="btn-sm" onClick={()=>{setTrackId(o.id);setPage('track');}}>Rastrear</button>]
-            :[<span key="d" style={{fontSize:12,color:'var(--text2)'}}>{o.status==='done'?'✓ Concluído':'✗ Cancelado'}</span>]
-        }/>)
-      }
+      {loading?<Loading/>:orders.length===0?<Empty icon="📦" text="Nenhum pedido ainda. Crie seu primeiro!"/>:<>
+        {/* Group by date */}
+        {Object.entries(orders.reduce((acc,o)=>{const d=o.created_at?.slice(0,10)||'';if(!acc[d])acc[d]=[];acc[d].push(o);return acc;},{})).map(([date,dayOrders])=><div key={date}>
+          <div style={{padding:'10px 14px 4px',fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em'}}>{fmtDate(date)}</div>
+          {dayOrders.map(o=><OrderCard key={o.id} order={o} actions={
+            ['waiting','accepted','collecting','delivering'].includes(o.status)
+              ?[<button key="t" className="btn-sm" onClick={()=>{setTrackId(o.id);setPage('track');}}>Rastrear</button>]
+              :[<span key="d" style={{fontSize:12,color:'var(--text2)'}}>{o.status==='done'?'✓ Concluído':'✗ Cancelado'}</span>]
+          }/>)}
+        </div>)}
+      </>}
     </div>
     <div className="tabbar">
       <button className="tab-item" onClick={()=>setPage('new-order')}><span className="tab-icon">➕</span><span>Novo pedido</span></button>
@@ -1208,6 +1293,7 @@ function CourierFin({setPage}) {
   const loadData=async()=>{if(!profile)return;const wC=getWeekBounds(0),wP=getWeekBounds(-1),f=getWeekBounds(-3).start;const[or,pa,me,ne,bo]=await Promise.all([db.from('orders').select('courier_price,price,created_at,neighborhood').eq('courier_id',profile.id).eq('status','done').gte('created_at',f.toISOString()).order('created_at',{ascending:false}),db.from('payments').select('*').eq('type','courier_payout').eq('reference_id',profile.id).gte('created_at',f.toISOString()).order('created_at',{ascending:false}),db.from('users').select('can_refer,referral_code').eq('id',profile.id).single(),db.from('users').select('id,name,created_at').eq('referred_by',profile.id).eq('role','courier'),db.from('referral_bonuses').select('*').eq('earner_id',profile.id).order('created_at',{ascending:false}).limit(50)]);const orders=or.data||[],payments=pa.data||[],myMe=me.data,network=ne.data||[],bonuses=bo.data||[];const curr=orders.filter(o=>{const d=new Date(o.created_at);return d>=wC.start&&d<=wC.end;}),prev=orders.filter(o=>{const d=new Date(o.created_at);return d>=wP.start&&d<=wP.end;});const earn=a=>a.reduce((s,o)=>s+(o.courier_price?+o.courier_price:+o.price*.8),0);setData({wC,wP,curr,prev,currE:earn(curr),prevE:earn(prev),payments,me:myMe,network,bonuses});setLoading(false);};
   const copy=link=>{navigator.clipboard.writeText(link).then(()=>toast('Link copiado! ✓')).catch(()=>toast('Copie: '+link));};
   const share=link=>{if(navigator.share)navigator.share({title:'Entregou',text:'Cadastre-se como entregador:',url:link});else copy(link);};
+  const [histTab, setHistTab] = useState('financial');
   if(loading)return<div className="screen"><Topbar title="Meu financeiro" onBack={()=>setPage('courier')}/><Loading/></div>;
   const{wC,wP,curr,prev,currE,prevE,payments,me,network,bonuses}=data;
   const pPend=payments.find(p=>p.status==='pending'&&p.week_start===wP.start.toISOString().slice(0,10));
@@ -1217,9 +1303,15 @@ function CourierFin({setPage}) {
   const tBonus=bonuses.reduce((a,b)=>a+(+b.amount),0);
   const appUrl=window.location.origin+window.location.pathname;
   const refLink=me?.referral_code?appUrl+'?role=courier&ref='+me.referral_code:null;
+  const tsH = t => ({padding:'9px 14px',fontSize:13,fontWeight:histTab===t?600:400,cursor:'pointer',color:histTab===t?'var(--blue)':'var(--text2)',borderBottom:histTab===t?'2px solid var(--blue)':'2px solid transparent',background:'none',border:'none',borderBottom:histTab===t?'2px solid var(--blue)':'2px solid transparent',fontFamily:'var(--font)'});
   return <div className="screen">
-    <Topbar title="Meu financeiro" onBack={()=>setPage('courier')} badge="Entregador" badgeClass="bd"/>
-    <div className="scroll"><div style={{padding:'14px 14px 0'}}>
+    <Topbar title="Financeiro & Histórico" onBack={()=>setPage('courier')} badge="Entregador" badgeClass="bd"/>
+    <div className="scroll">
+      <div style={{display:'flex',borderBottom:'1px solid var(--border)'}}>
+        <button style={tsH('financial')} onClick={()=>setHistTab('financial')}>💰 Financeiro</button>
+        <button style={tsH('history')} onClick={()=>setHistTab('history')}>📋 Histórico</button>
+      </div>
+    <div style={{display:histTab==='financial'?'block':'none'}}><div style={{padding:'14px 14px 0'}}>
       <div className="stitle" style={{padding:'0 0 10px'}}>Semana atual</div>
       <div className="kgrid"><div className="mcard"><div className="mval" style={{color:'var(--green)'}}>{fmtMoney(currE)}</div><div className="mlbl">a receber</div></div><div className="mcard"><div className="mval">{curr.length}</div><div className="mlbl">entregas</div></div></div>
       <div className="stitle" style={{padding:'0 0 4px'}}>Semana anterior</div>
@@ -2929,6 +3021,7 @@ function App() {
   const [page, setPage] = useState('auth');
   const [trackId, setTrackId] = useState(null);
   const [allocId, setAllocId] = useState(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (loading) return;
@@ -2940,6 +3033,12 @@ function App() {
 
   if (loading) return <div className="screen" style={{alignItems:'center',justifyContent:'center'}}><span className="spin"></span></div>;
 
+  // Floating action button for navigation — only shown when logged in
+  const NavFAB = () => profile ? <>
+    {drawerOpen && <NavDrawer profile={profile} page={page} setPage={setPage} onClose={()=>setDrawerOpen(false)}/>}
+    <button className="fab" onClick={()=>setDrawerOpen(o=>!o)} title="Menu de navegação">☰</button>
+  </> : null;
+
   const goBack = () => {
     if (!profile) return setPage('auth');
     if (profile.role === 'client')  return setPage('client-orders');
@@ -2947,7 +3046,7 @@ function App() {
     if (profile.role === 'admin')   return setPage('admin');
   };
 
-  switch(page) {
+  const renderPage = () => { switch(page) {
     case 'auth':          return <AuthPage/>;
     case 'client-orders': return <ClientOrders setPage={setPage} setTrackId={setTrackId}/>;
     case 'new-order':     return <NewOrder setPage={setPage}/>;
@@ -2971,7 +3070,8 @@ function App() {
     case 'admin-fin':     return <AdminFin setPage={setPage}/>;
     case 'profile':       return <ProfilePage goBack={goBack}/>;
     default:              return <AuthPage/>;
-  }
+  }};
+  return <>{renderPage()}<NavFAB/></>;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(
