@@ -437,142 +437,173 @@ function ProfilePage({goBack}) {
 // ===== CLIENT CLOSING =====
 function ClientClosing({setPage}) {
   const {profile} = useAuth(); const toast = useToast();
-  const [couriers, setCouriers] = useState([]);
-  const [selCourier, setSelCourier] = useState('');
-  const [priceItems, setPriceItems] = useState([]);
-  const [quantities, setQuantities] = useState({});
-  const [date, setDate] = useState(new Date().toISOString().slice(0,10));
-  const [loading, setLoading] = useState(false);
-  const [existing, setExisting] = useState(null);
+  const [tab, setTab] = useState('pending'); // pending | history
+  const [pending, setPending] = useState([]);
   const [myClosings, setMyClosings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [contesting, setContesting] = useState(null); // {closing, quantities}
+  const [contestQty, setContestQty] = useState({});
 
   useEffect(()=>{ loadAll(); },[profile]);
 
   const loadAll = async () => {
     if (!profile) return;
-    // Carrega TODOS os entregadores (não só os que já entregaram)
-    const {data:allCouriers} = await db.from('users').select('id,name,courier_number').eq('role','courier').order('name');
-    setCouriers((allCouriers||[]).map(c=>({id:c.id,name:c.name,number:c.courier_number})));
-    // My recent closings
-    const {data:cls} = await db.from('daily_closings').select('*').eq('client_id',profile.id).order('date',{ascending:false}).limit(20);
-    setMyClosings(cls||[]);
-    // Load prices
-    const items = await getPriceTableForClient(profile.id);
-    setPriceItems(items);
-  };
-
-  const checkExisting = async (courierId, dateVal) => {
-    if (!courierId || !dateVal) return;
-    const {data} = await db.from('daily_closings').select('*').eq('client_id',profile.id).eq('courier_id',courierId).eq('date',dateVal).maybeSingle();
-    setExisting(data);
-  };
-
-  useEffect(()=>{ checkExisting(selCourier,date); },[selCourier,date]);
-
-  const totalQty = Object.values(quantities).reduce((a,v)=>a+(+v||0),0);
-  const totalVal = Object.entries(quantities).reduce((a,[k,v])=>{
-    const item=priceItems.find(p=>(p.neighborhood_key||p.key)===k);
-    return a+(item?+(item.client_price||item.cliente||0)*(+v||0):0);
-  },0);
-
-  const submit = async () => {
-    if (!selCourier) { toast('Selecione o entregador'); return; }
-    if (totalQty===0) { toast('Informe ao menos 1 entrega'); return; }
     setLoading(true);
-    const courier = couriers.find(x=>x.id===selCourier);
-    const submission = Object.entries(quantities).filter(([,v])=>+v>0).map(([k,v])=>{
-      const item=priceItems.find(p=>(p.neighborhood_key||p.key)===k);
-      return {key:k,label:item?.neighborhood_label||item?.label||k,qty:+v,client_price:+(item?.client_price||item?.cliente||0)};
-    });
-    // Check if courier already submitted
-    const {data:existing2} = await db.from('daily_closings').select('*').eq('client_id',profile.id).eq('courier_id',selCourier).eq('date',date).maybeSingle();
-    let status = 'pending';
-    let agreedData = null;
-    if (existing2?.courier_submission) {
-      // Compare
-      const cs = existing2.courier_submission;
-      const match = submission.every(s=>{ const cf=cs.find(x=>x.key===s.key); return cf&&cf.qty===s.qty; }) && cs.every(s=>{ const cl=submission.find(x=>x.key===s.key); return cl&&cl.qty===s.qty; });
-      status = match ? 'matched' : 'diverged';
-      if (match) agreedData = submission;
-    }
-    const payload = { client_id:profile.id, client_name:profile.name, courier_id:selCourier, courier_name:courier?.name||'', courier_number:courier?.number||null, date, client_submission:submission, status, ...(agreedData&&{agreed_data:agreedData}), updated_at:new Date().toISOString() };
-    if (existing2) { await db.from('daily_closings').update(payload).eq('id',existing2.id); }
-    else { await db.from('daily_closings').insert(payload); }
+    // Lançamentos do entregador aguardando confirmação do cliente
+    const {data:pend} = await db.from('daily_closings')
+      .select('*')
+      .eq('client_id', profile.id)
+      .eq('status', 'pending')
+      .not('courier_submission', 'is', null)
+      .order('date', {ascending:false});
+    setPending(pend||[]);
+    // Histórico
+    const {data:hist} = await db.from('daily_closings')
+      .select('*')
+      .eq('client_id', profile.id)
+      .in('status', ['matched','diverged','agreed','disputed'])
+      .order('date', {ascending:false})
+      .limit(30);
+    setMyClosings(hist||[]);
     setLoading(false);
-    if (status==='matched') toast('✅ Fechamento confirmado! Coincide com o entregador.');
-    else if (status==='diverged') toast('⚠️ Divergência encontrada! Entregador registrou valores diferentes.');
-    else toast('Lançamento enviado! Aguardando confirmação do entregador.');
-    setQuantities({}); loadAll();
   };
 
-  const statusInfo = { pending:{icon:'⏳',label:'Aguardando',color:'var(--amber)'}, matched:{icon:'✅',label:'Confirmado',color:'var(--green)'}, diverged:{icon:'⚠️',label:'Divergência',color:'var(--red)'}, agreed:{icon:'✅',label:'Acordado',color:'var(--green)'}, disputed:{icon:'🔴',label:'Em disputa',color:'var(--red)'} };
+  const confirm = async (closing) => {
+    // Cliente confirma exatamente o que o entregador lançou
+    await db.from('daily_closings').update({
+      client_submission: closing.courier_submission,
+      status: 'matched',
+      agreed_data: closing.courier_submission,
+      updated_at: new Date().toISOString()
+    }).eq('id', closing.id);
+    toast('✅ Fechamento confirmado!');
+    loadAll();
+  };
+
+  const startContest = (closing) => {
+    // Pré-preenche com os valores do entregador para o cliente ajustar
+    const qty = {};
+    (closing.courier_submission||[]).forEach(s => { qty[s.key] = s.qty; });
+    setContestQty(qty);
+    setContesting(closing);
+  };
+
+  const submitContest = async () => {
+    if (!contesting) return;
+    const submission = Object.entries(contestQty).filter(([,v])=>+v>0).map(([k,v])=>{
+      const orig = (contesting.courier_submission||[]).find(x=>x.key===k);
+      return {key:k, label:orig?.label||k, qty:+v};
+    });
+    // Check if matches courier
+    const cs = contesting.courier_submission||[];
+    const match = submission.every(s=>{const cf=cs.find(x=>x.key===s.key);return cf&&cf.qty===s.qty;}) && cs.every(s=>{const cl=submission.find(x=>x.key===s.key);return cl&&cl.qty===s.qty;});
+    await db.from('daily_closings').update({
+      client_submission: submission,
+      status: match ? 'matched' : 'diverged',
+      ...(match && {agreed_data: submission}),
+      updated_at: new Date().toISOString()
+    }).eq('id', contesting.id);
+    toast(match ? '✅ Confirmado!' : '⚠️ Contestação enviada ao entregador.');
+    setContesting(null); setContestQty({});
+    loadAll();
+  };
+
+  const statusInfo = {
+    pending:{icon:'⏳',label:'Aguardando',color:'var(--amber)',bg:'var(--amber-l)'},
+    matched:{icon:'✅',label:'Confirmado',color:'var(--green)',bg:'var(--green-l)'},
+    diverged:{icon:'⚠️',label:'Divergência',color:'var(--red)',bg:'var(--red-l)'},
+    agreed:{icon:'✅',label:'Acordado',color:'var(--green)',bg:'var(--green-l)'},
+    disputed:{icon:'🔴',label:'Em disputa',color:'var(--red)',bg:'var(--red-l)'}
+  };
+
+  const ts = t => ({padding:'9px 14px',fontSize:13,fontWeight:tab===t?600:400,cursor:'pointer',color:tab===t?'var(--blue)':'var(--text2)',borderBottom:tab===t?'2px solid var(--blue)':'2px solid transparent',background:'none',border:'none',borderBottom:tab===t?'2px solid var(--blue)':'2px solid transparent',fontFamily:'var(--font)'});
 
   return <div className="screen">
     <Topbar title="Fechamento diário" onBack={()=>setPage('client-orders')} badge="Cliente" badgeClass="bc"/>
     <div className="scroll">
-      <div className="notice ni" style={{marginTop:10}}>Registre as entregas realizadas ao final da jornada. O entregador confirma no app dele.</div>
-
-      <div className="stitle">🛵 Entregador</div>
-      <div className="fgrp">
-        <select value={selCourier} onChange={e=>setSelCourier(e.target.value)}>
-          <option value="">— Selecione o entregador —</option>
-          {couriers.map(x=><option key={x.id} value={x.id}>{x.number?'#'+x.number+' ':''}{x.name}</option>)}
-        </select>
-        {couriers.length===0&&<div style={{fontSize:12,color:'var(--text2)',marginTop:6}}>Nenhum entregador cadastrado ainda.</div>}
+      <div style={{display:'flex',borderBottom:'1px solid var(--border)'}}>
+        <button style={ts('pending')} onClick={()=>setTab('pending')}>
+          Pendentes {pending.length>0&&<span style={{marginLeft:4,background:'var(--red)',color:'white',borderRadius:10,fontSize:10,padding:'1px 6px',fontWeight:700}}>{pending.length}</span>}
+        </button>
+        <button style={ts('history')} onClick={()=>setTab('history')}>Histórico</button>
       </div>
-      <div className="stitle">📅 Data</div>
-      <div className="fgrp"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
 
-      {existing&&<div style={{margin:'0 14px 10px',padding:'10px 14px',borderRadius:'var(--rs)',background:statusInfo[existing.status]?.color==='var(--green)'?'var(--green-l)':statusInfo[existing.status]?.color==='var(--red)'?'var(--red-l)':'var(--amber-l)'}}>
-        <div style={{fontSize:13,fontWeight:600,color:statusInfo[existing.status]?.color}}>{statusInfo[existing.status]?.icon} Já existe lançamento para esta data: {statusInfo[existing.status]?.label}</div>
-        {existing.status==='diverged'&&<div style={{fontSize:11,marginTop:4,color:'var(--red)'}}>Você registrou {(existing.client_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas. Entregador registrou {(existing.courier_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas.</div>}
-      </div>}
+      {loading?<Loading/>:<>
 
-      {priceItems.length===0&&selCourier&&<div className="notice ne">Configure sua tabela de preços em contato com o admin.</div>}
-      {priceItems.length>0&&<>
-        <div className="stitle">📦 Entregas por região</div>
-        <div style={{padding:'0 14px'}}>
-          {priceItems.map(item=>{
-            const key=item.neighborhood_key||item.key;
-            const qty=quantities[key]||0;
-            return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
-              <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:500}}>{item.neighborhood_label||item.label}</div>
-                <div style={{fontSize:11,color:'var(--text2)'}}>{fmtMoney(+(item.client_price||item.cliente||0))} por entrega</div>
-              </div>
-              <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <button onClick={()=>setQuantities(q=>({...q,[key]:Math.max(0,(q[key]||0)-1)}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
-                <input type="number" min="0" value={qty||''} onChange={e=>setQuantities(q=>({...q,[key]:Math.max(0,parseInt(e.target.value)||0)}))} placeholder="0" style={{width:52,textAlign:'center',padding:'5px 4px',fontSize:15,fontWeight:700}}/>
-                <button onClick={()=>setQuantities(q=>({...q,[key]:(q[key]||0)+1}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:16,color:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center'}}>+</button>
-              </div>
-            </div>;
-          })}
-        </div>
-        {totalQty>0&&<div className="pbox" style={{margin:'12px 14px'}}>
-          <div className="prow"><span>Total de entregas</span><span style={{fontWeight:700}}>{totalQty}</span></div>
-          <div className="ptotal"><span>Total a pagar</span><span style={{color:'var(--blue)'}}>{fmtMoney(totalVal)}</span></div>
-        </div>}
-        <button className="btn btn-blue" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading||totalQty===0}>{loading?'Enviando...':'Enviar fechamento'}</button>
-      </>}
+        {/* PENDING TAB */}
+        {tab==='pending'&&<>
+          {pending.length===0
+            ?<Empty icon="✅" text="Nenhum lançamento pendente. Os entregadores ainda não enviaram o fechamento de hoje."/>
+            :pending.map(cl=>{
+              const total=(cl.courier_submission||[]).reduce((a,x)=>a+x.qty,0);
+              return <div key={cl.id} className="ocard" style={{margin:'8px 14px'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:700}}>{cl.courier_name}{cl.courier_number?' #'+cl.courier_number:''}</div>
+                    <div style={{fontSize:11,color:'var(--text2)'}}>{fmtDate(cl.date)} · {total} entrega{total!==1?'s':''}</div>
+                  </div>
+                  <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:'var(--amber-l)',color:'var(--amber)'}}>⏳ Aguarda você</span>
+                </div>
+                {/* Show what courier submitted */}
+                <div style={{background:'var(--bg2)',borderRadius:'var(--rs)',padding:'10px 12px',marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:6}}>Lançado pelo entregador</div>
+                  {(cl.courier_submission||[]).map((s,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:13,padding:'3px 0',borderBottom:i<(cl.courier_submission||[]).length-1?'1px solid var(--border)':''}}>
+                    <span>{s.label}</span><span style={{fontWeight:700}}>{s.qty}x</span>
+                  </div>)}
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:14,fontWeight:700,marginTop:8,paddingTop:6,borderTop:'1px solid var(--border)'}}>
+                    <span>Total</span><span style={{color:'var(--green)'}}>{total} entregas</span>
+                  </div>
+                </div>
+                {/* Contest form */}
+                {contesting?.id===cl.id?<>
+                  <div style={{fontSize:11,fontWeight:700,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Seu lançamento (ajuste se necessário)</div>
+                  {(cl.courier_submission||[]).map(s=><div key={s.key} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
+                    <div style={{flex:1,fontSize:13,fontWeight:500}}>{s.label}</div>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <button onClick={()=>setContestQty(q=>({...q,[s.key]:Math.max(0,(q[s.key]||0)-1)}))} style={{width:26,height:26,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
+                      <input type="number" min="0" value={contestQty[s.key]||0} onChange={e=>setContestQty(q=>({...q,[s.key]:Math.max(0,parseInt(e.target.value)||0)}))} style={{width:46,textAlign:'center',padding:'4px',fontSize:14,fontWeight:700}}/>
+                      <button onClick={()=>setContestQty(q=>({...q,[s.key]:(q[s.key]||0)+1}))} style={{width:26,height:26,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:14,color:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center'}}>+</button>
+                    </div>
+                  </div>)}
+                  <div style={{display:'flex',gap:8,marginTop:12}}>
+                    <button className="btn-sm progress" style={{flex:1,padding:'9px'}} onClick={submitContest}>Enviar meu lançamento</button>
+                    <button className="btn-sm" style={{flex:1,padding:'9px'}} onClick={()=>setContesting(null)}>Cancelar</button>
+                  </div>
+                </>:<div style={{display:'flex',gap:8}}>
+                  <button className="btn btn-blue" style={{flex:1,padding:'10px',fontSize:13}} onClick={()=>confirm(cl)}>✅ Confirmar tudo</button>
+                  <button className="btn-sm" style={{flex:1,padding:'10px',fontSize:13}} onClick={()=>startContest(cl)}>✏️ Contestar</button>
+                </div>}
+              </div>;
+            })
+          }
+        </>}
 
-      {myClosings.length>0&&<>
-        <div className="stitle" style={{paddingTop:8}}>Histórico de fechamentos</div>
-        {myClosings.map(cl=>{
-          const si=statusInfo[cl.status]||{icon:'?',label:cl.status,color:'var(--text2)'};
-          const total=(cl.agreed_data||cl.client_submission||[]).reduce((a,x)=>a+x.qty,0);
-          return <div key={cl.id} className="ocard" style={{margin:'0 14px 8px'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontSize:13,fontWeight:600}}>{fmtDate(cl.date)} · {cl.courier_name}</div><div style={{fontSize:11,color:'var(--text2)'}}>{total} entrega{total!==1?'s':''}</div></div>
-              <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:si.color==='var(--green)'?'var(--green-l)':si.color==='var(--red)'?'var(--red-l)':'var(--amber-l)',color:si.color}}>{si.icon} {si.label}</span>
-            </div>
-          </div>;
-        })}
+        {/* HISTORY TAB */}
+        {tab==='history'&&<>
+          {myClosings.length===0?<Empty icon="📋" text="Nenhum fechamento no histórico ainda."/>:
+            myClosings.map(cl=>{
+              const si=statusInfo[cl.status]||{icon:'?',label:cl.status,color:'var(--text2)',bg:'var(--bg2)'};
+              const total=(cl.agreed_data||cl.courier_submission||[]).reduce((a,x)=>a+x.qty,0);
+              return <div key={cl.id} className="ocard" style={{margin:'0 14px 8px'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600}}>{cl.courier_name}{cl.courier_number?' #'+cl.courier_number:''}</div>
+                    <div style={{fontSize:11,color:'var(--text2)'}}>{fmtDate(cl.date)} · {total} entrega{total!==1?'s':''}</div>
+                  </div>
+                  <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:si.bg,color:si.color}}>{si.icon} {si.label}</span>
+                </div>
+                {cl.status==='diverged'&&<div style={{fontSize:11,color:'var(--red)',marginTop:6}}>
+                  Entregador: {(cl.courier_submission||[]).reduce((a,x)=>a+x.qty,0)} · Você: {(cl.client_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas
+                </div>}
+              </div>;
+            })
+          }
+        </>}
       </>}
     </div>
   </div>;
 }
 
-// ===== COURIER CLOSING =====
 function CourierClosing({setPage}) {
   const {profile} = useAuth(); const toast = useToast();
   const [clients, setClients] = useState([]);
@@ -583,24 +614,24 @@ function CourierClosing({setPage}) {
   const [loading, setLoading] = useState(false);
   const [myClosings, setMyClosings] = useState([]);
   const [existing, setExisting] = useState(null);
+  const [tab, setTab] = useState('launch'); // launch | history
 
   useEffect(()=>{ loadAll(); },[profile]);
 
   const loadAll = async () => {
     if (!profile) return;
-    const {data:orders} = await db.from('orders').select('client_id,client_name').eq('courier_id',profile.id).eq('status','done').order('created_at',{ascending:false}).limit(100);
-    const seen={}; const list=[];
-    (orders||[]).forEach(o=>{ if(o.client_id&&!seen[o.client_id]){seen[o.client_id]=true;list.push({id:o.client_id,name:o.client_name});}});
-    setClients(list);
-    const {data:cls} = await db.from('daily_closings').select('*').eq('courier_id',profile.id).order('date',{ascending:false}).limit(20);
-    setMyClosings(cls||[]);
+    // Todos os clientes disponíveis
+    const {data:cls} = await db.from('users').select('id,name').eq('role','client').order('name');
+    setClients(cls||[]);
+    // Meus fechamentos recentes
+    const {data:hist} = await db.from('daily_closings').select('*').eq('courier_id',profile.id).order('date',{ascending:false}).limit(30);
+    setMyClosings(hist||[]);
   };
 
   const onSelectClient = async (id) => {
     setSelClient(id); setQuantities({}); setPriceItems([]); setExisting(null);
     if (!id) return;
     const items = await getPriceTableForClient(id);
-    // Courier only sees neighborhood names and qty — NOT prices
     setPriceItems(items.map(i=>({...i,_hidePrice:true})));
     checkExisting(id, date);
   };
@@ -622,83 +653,114 @@ function CourierClosing({setPage}) {
     const client = clients.find(x=>x.id===selClient);
     const submission = Object.entries(quantities).filter(([,v])=>+v>0).map(([k,v])=>{
       const item=priceItems.find(p=>(p.neighborhood_key||p.key)===k);
-      return {key:k,label:item?.neighborhood_label||item?.label||k,qty:+v};
+      return {key:k, label:item?.neighborhood_label||item?.label||k, qty:+v};
     });
-    const {data:ex} = await db.from('daily_closings').select('*').eq('courier_id',profile.id).eq('client_id',selClient).eq('date',date).maybeSingle();
-    let status='pending', agreedData=null;
-    if (ex?.client_submission) {
-      const cs=ex.client_submission;
-      const match=submission.every(s=>{ const cf=cs.find(x=>x.key===s.key); return cf&&cf.qty===s.qty; }) && cs.every(s=>{ const cl2=submission.find(x=>x.key===s.key); return cl2&&cl2.qty===s.qty; });
-      status=match?'matched':'diverged';
-      if(match) agreedData=submission;
+    const payload = {
+      courier_id:profile.id, courier_name:profile.name,
+      courier_number:profile.courier_number||null,
+      client_id:selClient, client_name:client?.name||'',
+      date, courier_submission:submission,
+      status:'pending', // sempre pending — cliente confirma
+      updated_at:new Date().toISOString()
+    };
+    if(existing) {
+      await db.from('daily_closings').update(payload).eq('id',existing.id);
+    } else {
+      await db.from('daily_closings').insert(payload);
     }
-    const payload={courier_id:profile.id,courier_name:profile.name,courier_number:profile.courier_number||null,client_id:selClient,client_name:client?.name||'',date,courier_submission:submission,status,...(agreedData&&{agreed_data:agreedData}),updated_at:new Date().toISOString()};
-    if(ex){ await db.from('daily_closings').update(payload).eq('id',ex.id); }
-    else { await db.from('daily_closings').insert(payload); }
     setLoading(false);
-    if(status==='matched') toast('✅ Fechamento confirmado! Coincide com o cliente.');
-    else if(status==='diverged') toast('⚠️ Divergência! Cliente registrou valores diferentes.');
-    else toast('Lançamento enviado! Aguardando confirmação do cliente.');
-    setQuantities({}); loadAll();
+    toast('Lançamento enviado! O cliente receberá para confirmar. 📋');
+    setSelClient(''); setQuantities({}); setPriceItems([]); setExisting(null);
+    loadAll();
   };
 
-  const statusInfo={pending:{icon:'⏳',label:'Aguardando',color:'var(--amber)'},matched:{icon:'✅',label:'Confirmado',color:'var(--green)'},diverged:{icon:'⚠️',label:'Divergência',color:'var(--red)'},agreed:{icon:'✅',label:'Acordado',color:'var(--green)'},disputed:{icon:'🔴',label:'Em disputa',color:'var(--red)'}};
+  const statusInfo = {
+    pending:{icon:'⏳',label:'Aguardando cliente',color:'var(--amber)',bg:'var(--amber-l)'},
+    matched:{icon:'✅',label:'Confirmado',color:'var(--green)',bg:'var(--green-l)'},
+    diverged:{icon:'⚠️',label:'Divergência',color:'var(--red)',bg:'var(--red-l)'},
+    agreed:{icon:'✅',label:'Acordado',color:'var(--green)',bg:'var(--green-l)'},
+    disputed:{icon:'🔴',label:'Em disputa',color:'var(--red)',bg:'var(--red-l)'}
+  };
+
+  const ts = t => ({padding:'9px 14px',fontSize:13,fontWeight:tab===t?600:400,cursor:'pointer',color:tab===t?'var(--blue)':'var(--text2)',borderBottom:tab===t?'2px solid var(--blue)':'2px solid transparent',background:'none',border:'none',borderBottom:tab===t?'2px solid var(--blue)':'2px solid transparent',fontFamily:'var(--font)'});
+
+  const pendingCount = myClosings.filter(c=>c.status==='pending').length;
 
   return <div className="screen">
     <Topbar title="Fechamento do dia" onBack={()=>setPage('courier')} badge="Entregador" badgeClass="bd"/>
     <div className="scroll">
-      <div className="notice ni" style={{marginTop:10}}>Registre suas entregas ao final da jornada. O cliente confirma no app dele.</div>
-
-      <div className="stitle">👤 Cliente</div>
-      <div className="fgrp">
-        <select value={selClient} onChange={e=>onSelectClient(e.target.value)}>
-          <option value="">— Selecione o cliente —</option>
-          {clients.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
-        </select>
+      <div style={{display:'flex',borderBottom:'1px solid var(--border)'}}>
+        <button style={ts('launch')} onClick={()=>setTab('launch')}>📋 Lançar</button>
+        <button style={ts('history')} onClick={()=>setTab('history')}>
+          Histórico {pendingCount>0&&<span style={{marginLeft:4,background:'var(--amber)',color:'white',borderRadius:10,fontSize:10,padding:'1px 6px',fontWeight:700}}>{pendingCount}</span>}
+        </button>
       </div>
-      <div className="stitle">📅 Data</div>
-      <div className="fgrp"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
 
-      {existing&&<div style={{margin:'0 14px 10px',padding:'10px 14px',borderRadius:'var(--rs)',background:existing.status==='matched'?'var(--green-l)':existing.status==='diverged'?'var(--red-l)':'var(--amber-l)'}}>
-        <div style={{fontSize:13,fontWeight:600,color:statusInfo[existing.status]?.color}}>{statusInfo[existing.status]?.icon} Já existe lançamento: {statusInfo[existing.status]?.label}</div>
-        {existing.status==='diverged'&&<div style={{fontSize:11,marginTop:4,color:'var(--red)'}}>Você: {(existing.courier_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas · Cliente: {(existing.client_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas</div>}
-      </div>}
-
-      {priceItems.length>0&&<>
-        <div className="stitle">📦 Suas entregas por região</div>
-        <div className="notice ni" style={{margin:'0 14px 8px',fontSize:12}}>Informe apenas a quantidade. Os valores são controlados pelo admin.</div>
-        <div style={{padding:'0 14px'}}>
-          {priceItems.map(item=>{
-            const key=item.neighborhood_key||item.key;
-            const qty=quantities[key]||0;
-            return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
-              <div style={{flex:1,fontSize:13,fontWeight:500}}>{item.neighborhood_label||item.label}</div>
-              <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <button onClick={()=>setQuantities(q=>({...q,[key]:Math.max(0,(q[key]||0)-1)}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
-                <input type="number" min="0" value={qty||''} onChange={e=>setQuantities(q=>({...q,[key]:Math.max(0,parseInt(e.target.value)||0)}))} placeholder="0" style={{width:52,textAlign:'center',padding:'5px 4px',fontSize:15,fontWeight:700}}/>
-                <button onClick={()=>setQuantities(q=>({...q,[key]:(q[key]||0)+1}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:16,color:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center'}}>+</button>
-              </div>
-            </div>;
-          })}
+      {tab==='launch'&&<>
+        <div className="notice ni" style={{marginTop:10,fontSize:12}}>
+          Registre suas entregas. O cliente recebe para confirmar com 1 clique.
         </div>
-        {totalQty>0&&<div className="pbox" style={{margin:'12px 14px'}}>
-          <div className="ptotal"><span>Total de entregas</span><span style={{color:'var(--green)',fontSize:18}}>{totalQty}</span></div>
+        <div className="stitle">👤 Cliente</div>
+        <div className="fgrp">
+          <select value={selClient} onChange={e=>onSelectClient(e.target.value)}>
+            <option value="">— Selecione o cliente —</option>
+            {clients.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
+          </select>
+        </div>
+        <div className="stitle">📅 Data</div>
+        <div className="fgrp"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+
+        {existing&&<div style={{margin:'0 14px 10px',padding:'10px 14px',borderRadius:'var(--rs)',background:statusInfo[existing.status]?.bg||'var(--amber-l)'}}>
+          <div style={{fontSize:13,fontWeight:600,color:statusInfo[existing.status]?.color}}>{statusInfo[existing.status]?.icon} Já existe lançamento: {statusInfo[existing.status]?.label}</div>
+          {existing.status==='diverged'&&<div style={{fontSize:11,marginTop:4,color:'var(--red)'}}>Você: {(existing.courier_submission||[]).reduce((a,x)=>a+x.qty,0)} · Cliente: {(existing.client_submission||[]).reduce((a,x)=>a+x.qty,0)}</div>}
         </div>}
-        <button className="btn btn-green" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading||totalQty===0}>{loading?'Enviando...':'Enviar meu fechamento'}</button>
+
+        {priceItems.length>0&&<>
+          <div className="stitle">📦 Suas entregas por região</div>
+          <div className="notice ni" style={{margin:'0 14px 8px',fontSize:12}}>Informe a quantidade — os valores são controlados pelo admin.</div>
+          <div style={{padding:'0 14px'}}>
+            {priceItems.map(item=>{
+              const key=item.neighborhood_key||item.key;
+              const qty=quantities[key]||0;
+              return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+                <div style={{flex:1,fontSize:13,fontWeight:500}}>{item.neighborhood_label||item.label}</div>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <button onClick={()=>setQuantities(q=>({...q,[key]:Math.max(0,(q[key]||0)-1)}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
+                  <input type="number" min="0" value={qty||''} onChange={e=>setQuantities(q=>({...q,[key]:Math.max(0,parseInt(e.target.value)||0)}))} placeholder="0" style={{width:52,textAlign:'center',padding:'5px 4px',fontSize:15,fontWeight:700}}/>
+                  <button onClick={()=>setQuantities(q=>({...q,[key]:(q[key]||0)+1}))} style={{width:28,height:28,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:16,color:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center'}}>+</button>
+                </div>
+              </div>;
+            })}
+          </div>
+          {totalQty>0&&<div className="pbox" style={{margin:'12px 14px'}}>
+            <div className="ptotal"><span>Total de entregas</span><span style={{color:'var(--green)',fontSize:18}}>{totalQty}</span></div>
+          </div>}
+          <button className="btn btn-green" style={{margin:'6px 20px',width:'calc(100% - 40px)'}} onClick={submit} disabled={loading||totalQty===0}>
+            {loading?'Enviando...':'📋 Enviar para o cliente confirmar'}
+          </button>
+        </>}
+        {selClient&&priceItems.length===0&&<div className="notice ne">Este cliente não tem tabela de preços configurada.</div>}
       </>}
 
-      {myClosings.length>0&&<>
-        <div className="stitle" style={{paddingTop:8}}>Histórico</div>
-        {myClosings.map(cl=>{
-          const si=statusInfo[cl.status]||{icon:'?',label:cl.status,color:'var(--text2)'};
-          const total=(cl.courier_submission||[]).reduce((a,x)=>a+x.qty,0);
-          return <div key={cl.id} className="ocard" style={{margin:'0 14px 8px'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontSize:13,fontWeight:600}}>{fmtDate(cl.date)} · {cl.client_name}</div><div style={{fontSize:11,color:'var(--text2)'}}>{total} entrega{total!==1?'s':''}</div></div>
-              <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:si.color==='var(--green)'?'var(--green-l)':si.color==='var(--red)'?'var(--red-l)':'var(--amber-l)',color:si.color}}>{si.icon} {si.label}</span>
-            </div>
-          </div>;
-        })}
+      {tab==='history'&&<>
+        {myClosings.length===0?<Empty icon="📋" text="Nenhum fechamento ainda."/>:
+          myClosings.map(cl=>{
+            const si=statusInfo[cl.status]||{icon:'?',label:cl.status,color:'var(--text2)',bg:'var(--bg2)'};
+            const total=(cl.courier_submission||[]).reduce((a,x)=>a+x.qty,0);
+            return <div key={cl.id} className="ocard" style={{margin:'8px 14px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:600}}>{cl.client_name}</div>
+                  <div style={{fontSize:11,color:'var(--text2)'}}>{fmtDate(cl.date)} · {total} entrega{total!==1?'s':''}</div>
+                </div>
+                <span style={{fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,background:si.bg,color:si.color}}>{si.icon} {si.label}</span>
+              </div>
+              {cl.status==='diverged'&&<div style={{fontSize:11,color:'var(--red)',marginTop:6}}>
+                Você: {total} · Cliente confirmou: {(cl.client_submission||[]).reduce((a,x)=>a+x.qty,0)} entregas
+              </div>}
+            </div>;
+          })
+        }
       </>}
     </div>
   </div>;
