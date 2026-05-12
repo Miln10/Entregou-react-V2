@@ -2,10 +2,33 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#185FA5">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Entregou">
+<meta name="description" content="Plataforma de coleta e entrega em tempo real para Niterói">
+<meta name="application-name" content="Entregou">
+<link rel="manifest" href="data:application/json,{
+  &quot;name&quot;: &quot;Entregou&quot;,
+  &quot;short_name&quot;: &quot;Entregou&quot;,
+  &quot;description&quot;: &quot;Coleta e entrega em tempo real&quot;,
+  &quot;start_url&quot;: &quot;.&quot;,
+  &quot;display&quot;: &quot;standalone&quot;,
+  &quot;background_color&quot;: &quot;#ffffff&quot;,
+  &quot;theme_color&quot;: &quot;#185FA5&quot;,
+  &quot;orientation&quot;: &quot;portrait&quot;,
+  &quot;icons&quot;: [
+    { &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'&gt;&lt;rect width='192' height='192' rx='36' fill='%23185FA5'/&gt;&lt;text x='50%25' y='55%25' font-size='110' text-anchor='middle' dominant-baseline='middle'&gt;📦&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;192x192&quot;, &quot;type&quot;: &quot;image/svg+xml&quot;, &quot;purpose&quot;: &quot;any maskable&quot; },
+    { &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'&gt;&lt;rect width='512' height='512' rx='96' fill='%23185FA5'/&gt;&lt;text x='50%25' y='55%25' font-size='300' text-anchor='middle' dominant-baseline='middle'&gt;📦&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;512x512&quot;, &quot;type&quot;: &quot;image/svg+xml&quot;, &quot;purpose&quot;: &quot;any maskable&quot; }
+  ],
+  &quot;categories&quot;: [&quot;business&quot;, &quot;logistics&quot;],
+  &quot;shortcuts&quot;: [
+    { &quot;name&quot;: &quot;Novo pedido&quot;, &quot;short_name&quot;: &quot;Pedir&quot;, &quot;url&quot;: &quot;.?role=client&quot;, &quot;icons&quot;: [{ &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'&gt;&lt;text y='80' font-size='80'&gt;➕&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;96x96&quot; }] },
+    { &quot;name&quot;: &quot;Entregar&quot;, &quot;short_name&quot;: &quot;Entregar&quot;, &quot;url&quot;: &quot;.?role=courier&quot;, &quot;icons&quot;: [{ &quot;src&quot;: &quot;data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'&gt;&lt;text y='80' font-size='80'&gt;🛵&lt;/text&gt;&lt;/svg&gt;&quot;, &quot;sizes&quot;: &quot;96x96&quot; }] }
+  ]
+}">
 <title>Entregou</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -3077,6 +3100,71 @@ function App() {
 ReactDOM.createRoot(document.getElementById('root')).render(
   <AuthProvider><ToastProvider><App/></ToastProvider></AuthProvider>
 );
+</script>
+
+<script>
+// ===== SERVICE WORKER (PWA offline support) =====
+if ('serviceWorker' in navigator) {
+  const swCode = `
+    const CACHE = 'entregou-v1';
+    const ASSETS = [
+      self.location.pathname,
+      'https://unpkg.com/react@18/umd/react.production.min.js',
+      'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
+      'https://unpkg.com/@babel/standalone/babel.min.js',
+      'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
+    ];
+    self.addEventListener('install', e => {
+      e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS).catch(()=>{})));
+      self.skipWaiting();
+    });
+    self.addEventListener('activate', e => {
+      e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));
+    });
+    self.addEventListener('fetch', e => {
+      if (e.request.method !== 'GET') return;
+      e.respondWith(
+        fetch(e.request).catch(() => caches.match(e.request))
+      );
+    });
+  `;
+  const blob = new Blob([swCode], {type:'application/javascript'});
+  const swUrl = URL.createObjectURL(blob);
+  navigator.serviceWorker.register(swUrl).catch(()=>{});
+}
+
+// ===== INSTALL PROMPT =====
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  // Show install banner after 3s if not installed
+  setTimeout(() => {
+    if (deferredPrompt && !window.matchMedia('(display-mode: standalone)').matches) {
+      const banner = document.createElement('div');
+      banner.id = 'install-banner';
+      banner.innerHTML = `
+        <div style="position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:#1a1a1a;color:white;padding:12px 18px;border-radius:14px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:12px;box-shadow:0 4px 20px rgba(0,0,0,.3);z-index:998;max-width:340px;width:calc(100% - 40px)">
+          <span style="font-size:24px">📦</span>
+          <div style="flex:1">
+            <div>Instalar o Entregou</div>
+            <div style="font-size:11px;font-weight:400;opacity:.7;margin-top:2px">Adicione à tela inicial para acesso rápido</div>
+          </div>
+          <button id="install-yes" style="background:#185FA5;color:white;border:none;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Instalar</button>
+          <button id="install-no" style="background:transparent;color:white;border:none;font-size:18px;cursor:pointer;padding:0;opacity:.6">✕</button>
+        </div>
+      `;
+      document.body.appendChild(banner);
+      document.getElementById('install-yes').onclick = async () => {
+        deferredPrompt.prompt();
+        const {outcome} = await deferredPrompt.userChoice;
+        deferredPrompt = null;
+        banner.remove();
+      };
+      document.getElementById('install-no').onclick = () => banner.remove();
+    }
+  }, 3000);
+});
 </script>
 </body>
 </html>
