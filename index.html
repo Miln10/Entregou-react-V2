@@ -354,14 +354,51 @@ const SC = {
 const REFERRAL_L1 = 0.70,
   REFERRAL_L2 = 0.30;
 const fmtMoney = v => 'R$ ' + Number(v).toFixed(2).replace('.', ',');
-const fmtDate = d => new Date(d).toLocaleDateString('pt-BR', {
-  day: '2-digit',
-  month: '2-digit',
-  year: '2-digit'
-});
+// ===== DATE HELPERS — data é sempre a variável principal =====
+// Nunca usa toISOString() para datas (converte para UTC e distorce o dia)
+// Sempre usa o horário local do usuário
 const localDateStr = () => {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
+// Converte qualquer string/date para objeto Date sem distorção de fuso
+const parseDate = d => {
+  if (!d) return null;
+  const s = String(d);
+  // Se for YYYY-MM-DD, força meio-dia local para evitar distorção UTC
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + 'T12:00:00');
+  // Se for ISO com timezone, usa direto
+  return new Date(s);
+};
+// Formata data sempre corretamente
+const fmtDate = d => {
+  const dt = parseDate(d);
+  if (!dt || isNaN(dt)) return '';
+  return dt.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit'
+  });
+};
+// Formata data com dia da semana
+const fmtDateFull = d => {
+  const dt = parseDate(d);
+  if (!dt || isNaN(dt)) return '';
+  return dt.toLocaleDateString('pt-BR', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit'
+  });
+};
+// Compara duas datas (strings YYYY-MM-DD) ignorando horário
+const sameDay = (a, b) => String(a).slice(0, 10) === String(b).slice(0, 10);
+// Retorna timestamp local seguro para gravar no banco (sem distorção)
+const localTimestamp = () => {
+  const d = new Date();
+  // Usa a data local + hora local explicitamente
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 const ago = iso => {
   if (!iso) return '';
@@ -372,18 +409,18 @@ const ago = iso => {
   return Math.floor(d / 86400) + 'd atrás';
 };
 const getWeekBounds = (offset = 0) => {
-  const now = new Date(),
-    day = now.getDay(),
-    diff = day === 0 ? -6 : 1 - day,
-    mon = new Date(now);
-  mon.setDate(now.getDate() + diff + offset * 7);
-  mon.setHours(0, 0, 0, 0);
-  const sun = new Date(mon);
-  sun.setDate(mon.getDate() + 6);
-  sun.setHours(23, 59, 59, 999);
+  const now = new Date();
+  const day = now.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff + offset * 7);
+  const sun = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff + offset * 7 + 6);
+  // Retorna strings locais YYYY-MM-DD para evitar distorção UTC
+  const toStr = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   return {
     start: mon,
-    end: sun
+    end: sun,
+    startStr: toStr(mon),
+    endStr: toStr(sun)
   };
 };
 const genCode = name => name.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) + Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -1638,7 +1675,7 @@ function ClientClosing({
       client_submission: closing.courier_submission,
       status: 'matched',
       agreed_data: closing.courier_submission,
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     }).eq('id', closing.id);
     toast('✅ Fechamento confirmado!');
     loadAll();
@@ -1679,7 +1716,7 @@ function ClientClosing({
       ...(match && {
         agreed_data: submission
       }),
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     }).eq('id', contesting.id);
     if (dateChanged) toast('📅 Data corrigida para ' + contestDate + (match ? '  ✅' : '  ⚠️ Aguardando entregador confirmar nova data.'));else toast(match ? '✅ Confirmado!' : '⚠️ Contestação enviada ao entregador.');
     setContesting(null);
@@ -2128,7 +2165,7 @@ function CourierClosing({
       courier_submission: submission,
       status: 'pending',
       // sempre pending — cliente confirma
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     };
     if (existing) {
       await db.from('daily_closings').update(payload).eq('id', existing.id);
@@ -3493,11 +3530,9 @@ function CourierDash({
   }, [profile]);
   const loadStats = useCallback(async () => {
     if (!profile) return;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
     const {
       data
-    } = await db.from('orders').select('courier_price,price').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', today.toISOString());
+    } = await db.from('orders').select('courier_price,price').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', localDateStr() + 'T00:00:00');
     const e = (data || []).reduce((a, o) => a + (o.courier_price ? +o.courier_price : +o.price * 0.8), 0);
     setStats({
       d: (data === null || data === void 0 ? void 0 : data.length) || 0,
@@ -3517,7 +3552,7 @@ function CourierDash({
         await db.from('users').update({
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
-          location_updated_at: new Date().toISOString()
+          location_updated_at: localTimestamp()
         }).eq('id', profile.id);
       }, e => console.warn('GPS:', e.message), {
         enableHighAccuracy: true,
@@ -3554,8 +3589,8 @@ function CourierDash({
   const processBonus = async order => {
     if (!order.courier_id) return;
     const week = getWeekBounds(0);
-    const ws = week.start.toISOString().slice(0, 10),
-      we = week.end.toISOString().slice(0, 10);
+    const ws = week.startStr,
+      we = week.endStr;
     // Busca configuração do multinível do Supabase (ou usa padrão)
     const ml = getSetting('multinivel', {
       nivel1: 0.70,
@@ -3628,7 +3663,7 @@ function CourierDash({
       courier_phone: profile.phone || null,
       courier_number: profile.courier_number || null,
       status: 'accepted',
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     }).eq('id', id).eq('status', 'waiting');
     if (error) {
       toast('Pedido já aceito por outro');
@@ -3640,7 +3675,7 @@ function CourierDash({
   const advance = async (id, next) => {
     await db.from('orders').update({
       status: next,
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     }).eq('id', id);
     if (next === 'done') {
       toast('Entrega concluída! 🎉');
@@ -3904,9 +3939,9 @@ function CourierFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1),
       f = getWeekBounds(-3).start;
-    const [or, pa, me, ne, bo] = await Promise.all([db.from('orders').select('courier_price,price,created_at,neighborhood').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', f.toISOString()).order('created_at', {
+    const [or, pa, me, ne, bo] = await Promise.all([db.from('orders').select('courier_price,price,created_at,neighborhood').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', getWeekBounds(-3).startStr).order('created_at', {
       ascending: false
-    }), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', f.toISOString()).order('created_at', {
+    }), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', getWeekBounds(-3).startStr).order('created_at', {
       ascending: false
     }), db.from('users').select('can_refer,referral_code').eq('id', profile.id).single(), db.from('users').select('id,name,created_at').eq('referred_by', profile.id).eq('role', 'courier'), db.from('referral_bonuses').select('*').eq('earner_id', profile.id).order('created_at', {
       ascending: false
@@ -3917,12 +3952,12 @@ function CourierFin({
       network = ne.data || [],
       bonuses = bo.data || [];
     const curr = orders.filter(o => {
-        const d = new Date(o.created_at);
-        return d >= wC.start && d <= wC.end;
+        var _o$created_at3, _o$created_at4;
+        return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wC.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wC.endStr;
       }),
       prev = orders.filter(o => {
-        const d = new Date(o.created_at);
-        return d >= wP.start && d <= wP.end;
+        var _o$created_at5, _o$created_at6;
+        return ((_o$created_at5 = o.created_at) === null || _o$created_at5 === void 0 ? void 0 : _o$created_at5.slice(0, 10)) >= wP.startStr && ((_o$created_at6 = o.created_at) === null || _o$created_at6 === void 0 ? void 0 : _o$created_at6.slice(0, 10)) <= wP.endStr;
       });
     const earn = a => a.reduce((s, o) => s + (o.courier_price ? +o.courier_price : +o.price * .8), 0);
     setData({
@@ -3968,8 +4003,8 @@ function CourierFin({
     network,
     bonuses
   } = data;
-  const pPend = payments.find(p => p.status === 'pending' && p.week_start === wP.start.toISOString().slice(0, 10));
-  const pPaid = payments.find(p => p.status === 'paid' && p.week_start === wP.start.toISOString().slice(0, 10));
+  const pPend = payments.find(p => p.status === 'pending' && p.week_start === wP.startStr);
+  const pPaid = payments.find(p => p.status === 'paid' && p.week_start === wP.startStr);
   const pAll = payments.filter(p => p.status === 'paid');
   const ubBonus = bonuses.filter(b => !b.paid).reduce((a, b) => a + +b.amount, 0);
   const tBonus = bonuses.reduce((a, b) => a + +b.amount, 0);
@@ -4363,7 +4398,7 @@ function AdminSettings({
     await db.from('settings').upsert({
       id: 'multinivel',
       value: val,
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     });
     await loadSettings();
     setSaving(false);
@@ -5381,7 +5416,7 @@ function AdminShifts({
           rows.push({
             client_id: selClient,
             client_name: (client === null || client === void 0 ? void 0 : client.name) || '',
-            date: d.toISOString().slice(0, 10),
+            date: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'),
             start_time: p.start,
             end_time: p.end,
             slots: p.slots,
@@ -5435,7 +5470,7 @@ function AdminShifts({
         await db.from('shift_assignments').update({
           status: 'confirmed',
           waitlist_position: null,
-          notified_at: new Date().toISOString()
+          notified_at: localTimestamp()
         }).eq('id', first.id);
         toast((status === 'absent' ? 'Falta registrada' : 'Cancelado') + '. ' + first.courier_name + ' promovido da fila! ✓');
       } else {
@@ -5953,7 +5988,7 @@ function CourierShifts({
     await db.from('shift_assignments').update({
       status: 'confirmed',
       waitlist_position: null,
-      notified_at: new Date().toISOString()
+      notified_at: localTimestamp()
     }).eq('id', first.id);
     return first.courier_name;
   };
@@ -7495,8 +7530,8 @@ function AdminManualDelivery({
     const L1 = +ml.nivel1 || 0.70;
     const L2L0 = +ml.nivel2_para_nivel0 || 0.30;
     const week = getWeekBounds(0);
-    const ws = week.start.toISOString().slice(0, 10);
-    const we = week.end.toISOString().slice(0, 10);
+    const ws = week.startStr;
+    const we = week.endStr;
     let created = 0;
     for (const p of preview) {
       for (let i = 0; i < p.qty; i++) {
@@ -7517,8 +7552,8 @@ function AdminManualDelivery({
           courier_price: p.crp,
           gestora_amount: p.gestora,
           status: 'done',
-          created_at: new Date(date).toISOString(),
-          updated_at: new Date(date).toISOString()
+          created_at: date + 'T12:00:00',
+          updated_at: date + 'T12:00:00'
         }).select().single();
         if (error) {
           console.error(error);
@@ -8443,7 +8478,7 @@ function AdminOrders({
     if (!confirm('Cancelar este pedido?')) return;
     await db.from('orders').update({
       status: 'cancelled',
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     }).eq('id', id);
     toast('Pedido cancelado');
     load();
@@ -8818,7 +8853,7 @@ function AdminAlloc({
       courier_id: c.id,
       courier_name: c.name,
       status: 'accepted',
-      updated_at: new Date().toISOString()
+      updated_at: localTimestamp()
     }).eq('id', orderId);
     toast(`${c.name} alocado! ✓`);
     setPage('admin-orders');
@@ -8913,7 +8948,7 @@ function AdminFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1),
       twa = new Date(wP.start);
-    const [or, pa, co, bo] = await Promise.all([db.from('orders').select('*').eq('status', 'done').gte('created_at', twa.toISOString()).order('created_at'), db.from('payments').select('*').gte('created_at', twa.toISOString()), db.from('users').select('*').eq('role', 'courier').order('name'), db.from('referral_bonuses').select('*').order('created_at', {
+    const [or, pa, co, bo] = await Promise.all([db.from('orders').select('*').eq('status', 'done').gte('created_at', getWeekBounds(-1).startStr).order('created_at'), db.from('payments').select('*').gte('created_at', getWeekBounds(-1).startStr), db.from('users').select('*').eq('role', 'courier').order('name'), db.from('referral_bonuses').select('*').order('created_at', {
       ascending: false
     }).limit(100)]);
     setData({
@@ -8941,7 +8976,7 @@ function AdminFin({
   const markPaid = async id => {
     await db.from('payments').update({
       status: 'paid',
-      paid_at: new Date().toISOString()
+      paid_at: localTimestamp()
     }).eq('id', id);
     toast('Pagamento registrado ✓');
     loadData();
@@ -8970,7 +9005,7 @@ function AdminFin({
     if (!confirm(`Confirmar Pix de ${fmtMoney(amt)} para ${name}?`)) return;
     await db.from('payments').update({
       status: 'paid',
-      paid_at: new Date().toISOString()
+      paid_at: localTimestamp()
     }).eq('id', id);
     toast(`Pix confirmado para ${name} ✓`);
     loadData();
@@ -8990,7 +9025,7 @@ function AdminFin({
     if (!confirm(`Pagar bônus de ${fmtMoney(amt)} para ${name}?`)) return;
     await db.from('referral_bonuses').update({
       paid: true,
-      paid_at: new Date().toISOString()
+      paid_at: localTimestamp()
     }).eq('earner_id', id).eq('paid', false);
     toast(`Bônus pago para ${name} ✓`);
     loadData();
@@ -9019,8 +9054,8 @@ function AdminFin({
       const d = new Date(o.created_at);
       return d >= wC.start && d <= wC.end;
     });
-  const wps = wP.start.toISOString().slice(0, 10),
-    wpe = wP.end.toISOString().slice(0, 10);
+  const wps = wP.startStr,
+    wpe = wP.endStr;
   const cliMap = {};
   prev.forEach(o => {
     if (!o.client_name) return;
