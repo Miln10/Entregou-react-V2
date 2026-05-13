@@ -1674,15 +1674,125 @@ function ClientClosing({
     setLoading(false);
   };
   const confirm = async closing => {
-    // Cliente confirma exatamente o que o entregador lançou
+    // 1. Atualiza o fechamento como confirmado
     await db.from('daily_closings').update({
       client_submission: closing.courier_submission,
       status: 'matched',
       agreed_data: closing.courier_submission,
       updated_at: localTimestamp()
     }).eq('id', closing.id);
-    toast('✅ Fechamento confirmado!');
+
+    // 2. Cria pedidos em orders para alimentar o financeiro
+    await createOrdersFromClosing(closing, closing.courier_submission);
+    toast('✅ Fechamento confirmado! Entregas registradas no financeiro.');
     loadAll();
+  };
+  const createOrdersFromClosing = async (closing, submission) => {
+    if (!(submission !== null && submission !== void 0 && submission.length)) return;
+    // Busca tabela de preços do cliente
+    const priceItems = await getPriceTableForClient(profile.id);
+    const ml = getSetting('multinivel', {
+      total_pool: 1.00,
+      nivel1: 0.70,
+      nivel2_para_nivel0: 0.30
+    });
+    const pool = +ml.total_pool || 1.00;
+    const L1 = +ml.nivel1 || 0.70;
+    const L2L0 = +ml.nivel2_para_nivel0 || 0.30;
+    const week = getWeekBounds(0);
+    const ws = week.startStr,
+      we = week.endStr;
+
+    // Busca dados do entregador para multinível
+    const {
+      data: courier
+    } = await db.from('users').select('id,name,courier_number,referred_by,phone').eq('id', closing.courier_id).single();
+    const rows = [];
+    for (const item of submission) {
+      const priceItem = priceItems.find(p => (p.neighborhood_key || p.key) === item.key);
+      const clientPrice = +((priceItem === null || priceItem === void 0 ? void 0 : priceItem.client_price) || (priceItem === null || priceItem === void 0 ? void 0 : priceItem.cliente) || 0);
+      const courierPrice = +((priceItem === null || priceItem === void 0 ? void 0 : priceItem.courier_price) || (priceItem === null || priceItem === void 0 ? void 0 : priceItem.entregador) || 0);
+      const gestora = Math.max(0, +(clientPrice - courierPrice - pool).toFixed(2));
+      for (let i = 0; i < item.qty; i++) {
+        rows.push({
+          client_id: profile.id,
+          client_name: profile.name,
+          courier_id: closing.courier_id,
+          courier_name: closing.courier_name,
+          courier_number: closing.courier_number || null,
+          courier_phone: (courier === null || courier === void 0 ? void 0 : courier.phone) || null,
+          pickup_addr: profile.address || 'Manual',
+          delivery_addr: item.label || item.key,
+          neighborhood: item.key,
+          item_desc: 'Fechamento diário — ' + fmtDate(closing.date),
+          price: clientPrice,
+          courier_price: courierPrice,
+          gestora_amount: gestora,
+          status: 'done',
+          created_at: closing.date + 'T12:00:00',
+          updated_at: localTimestamp()
+        });
+      }
+    }
+    if (!rows.length) return;
+    const {
+      data: created,
+      error
+    } = await db.from('orders').insert(rows).select('id,courier_id,courier_price,gestora_amount,neighborhood');
+    if (error) {
+      console.error('Erro ao criar pedidos:', error);
+      return;
+    }
+
+    // Processa bônus multinível para cada pedido
+    if (courier !== null && courier !== void 0 && courier.referred_by) {
+      const {
+        data: l1
+      } = await db.from('users').select('id,name,can_refer,referred_by').eq('id', courier.referred_by).single();
+      if (l1 !== null && l1 !== void 0 && l1.can_refer) {
+        for (const order of created || []) {
+          let dist = 0;
+          await db.from('referral_bonuses').insert({
+            earner_id: l1.id,
+            earner_name: l1.name,
+            source_courier_id: courier.id,
+            source_courier_name: courier.name,
+            order_id: order.id,
+            level: 1,
+            amount: L1,
+            week_start: ws,
+            week_end: we
+          });
+          dist += L1;
+          if (l1.referred_by) {
+            const {
+              data: l0
+            } = await db.from('users').select('id,name,can_refer').eq('id', l1.referred_by).single();
+            if (l0 !== null && l0 !== void 0 && l0.can_refer) {
+              await db.from('referral_bonuses').insert({
+                earner_id: l0.id,
+                earner_name: l0.name,
+                source_courier_id: courier.id,
+                source_courier_name: courier.name,
+                order_id: order.id,
+                level: 0,
+                amount: L2L0,
+                week_start: ws,
+                week_end: we
+              });
+              dist += L2L0;
+            }
+          }
+          // Atualiza gestora com o que sobrou
+          const remaining = Math.max(0, +(pool - dist).toFixed(2));
+          if (remaining > 0) {
+            await db.from('orders').update({
+              gestora_amount: order.gestora_amount + remaining
+            }).eq('id', order.id);
+          }
+        }
+      }
+    }
   };
   const startContest = closing => {
     const qty = {};
@@ -1722,7 +1832,12 @@ function ClientClosing({
       }),
       updated_at: localTimestamp()
     }).eq('id', contesting.id);
-    if (dateChanged) toast('📅 Data corrigida para ' + contestDate + (match ? '  ✅' : '  ⚠️ Aguardando entregador confirmar nova data.'));else toast(match ? '✅ Confirmado!' : '⚠️ Contestação enviada ao entregador.');
+    if (match) await createOrdersFromClosing({
+      ...contesting,
+      date: contestDate || contesting.date,
+      courier_submission: submission
+    }, submission);
+    if (dateChanged) toast('📅 Data corrigida para ' + contestDate + (match ? ' ✅ Entregas registradas!' : ' ⚠️ Aguardando entregador confirmar.'));else toast(match ? '✅ Confirmado! Entregas registradas no financeiro.' : '⚠️ Contestação enviada ao entregador.');
     setContesting(null);
     setContestQty({});
     setContestDate('');
