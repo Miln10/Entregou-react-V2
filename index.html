@@ -138,7 +138,14 @@ const {
 } = supabase;
 
 // ===== SUPABASE =====
-const db = createClient('https://lgojqzwxxwtcnprmfayb.supabase.co', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxnb2pxend4eHd0Y25wcm1mYXliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxOTE0MzMsImV4cCI6MjA5MTc2NzQzM30.uxbpKQD0aPCzqxbWPvUuS4XxR-Og6vABR8EnlwAKL28');
+const db = createClient('https://lgojqzwxxwtcnprmfayb.supabase.co', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxnb2pxend4eHd0Y25wcm1mYXliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxOTE0MzMsImV4cCI6MjA5MTc2NzQzM30.uxbpKQD0aPCzqxbWPvUuS4XxR-Og6vABR8EnlwAKL28', {
+  auth: {
+    persistSession: true,
+    storageKey: 'entregou_session',
+    storage: window.localStorage,
+    autoRefreshToken: true
+  }
+});
 
 // ===== CONSTANTS =====
 // ===== SETTINGS LOADER =====
@@ -1043,7 +1050,37 @@ function NavDrawer({
       fontWeight: page === item.page ? 600 : 400,
       color: page === item.page ? 'var(--blue)' : 'var(--text)'
     }
-  }, item.label))))));
+  }, item.label)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '12px 14px',
+      borderTop: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: async () => {
+      await db.auth.signOut();
+      localStorage.removeItem('entregou_page');
+      onClose();
+    },
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      width: '100%',
+      padding: '10px 14px',
+      border: '1px solid var(--red-l)',
+      borderRadius: 'var(--rs)',
+      background: 'var(--red-l)',
+      cursor: 'pointer',
+      fontFamily: 'var(--font)',
+      color: 'var(--red)',
+      fontWeight: 600,
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 18
+    }
+  }, "\uD83D\uDEAA"), /*#__PURE__*/React.createElement("span", null, "Sair da conta")))));
 }
 
 // Wrapper to add hamburger to any Topbar
@@ -1631,7 +1668,7 @@ function ProfilePage({
   }, "Salvar nova senha")), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-red",
     onClick: doLogout
-  }, "Sair da conta")));
+  }, "\uD83D\uDEAA Sair da conta")));
 }
 
 // ===== CLIENT PAGES =====
