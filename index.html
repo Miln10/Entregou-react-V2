@@ -907,6 +907,10 @@ function NavDrawer({
     label: 'Fechamento',
     page: 'client-closing'
   }, {
+    icon: '💰',
+    label: 'Financeiro',
+    page: 'client-fin'
+  }, {
     icon: '👤',
     label: 'Perfil',
     page: 'profile'
@@ -2094,10 +2098,7 @@ function CourierClosing({
   const [existing, setExisting] = useState(null);
   const [tab, setTab] = useState('launch'); // launch | history
 
-  useEffect(() => {
-    loadAll();
-  }, [profile]);
-  const loadAll = async () => {
+  const loadAll = useCallback(async () => {
     if (!profile) return;
     // Todos os clientes disponíveis
     const {
@@ -2111,7 +2112,22 @@ function CourierClosing({
       ascending: false
     }).limit(30);
     setMyClosings(hist || []);
-  };
+  }, [profile]);
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
+
+  // Realtime — atualiza quando cliente confirma
+  useEffect(() => {
+    if (!profile) return;
+    const sub = db.channel('closing-courier-' + profile.id).on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'daily_closings',
+      filter: `courier_id=eq.${profile.id}`
+    }, loadAll).subscribe();
+    return () => db.removeChannel(sub);
+  }, [profile, loadAll]);
   const onSelectClient = async id => {
     setSelClient(id);
     setQuantities({});
@@ -2461,6 +2477,450 @@ function CourierClosing({
     }, "Voc\xEA: ", total, " \xB7 Cliente confirmou: ", (cl.client_submission || []).reduce((a, x) => a + x.qty, 0), " entregas"));
   }))));
 }
+
+// ===== CLIENT FIN =====
+function ClientFin({
+  setPage
+}) {
+  const {
+    profile
+  } = useAuth();
+  const toast = useToast();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState('week');
+  const loadData = useCallback(async () => {
+    if (!profile) return;
+    const wC = getWeekBounds(0),
+      wP = getWeekBounds(-1);
+    const from = getWeekBounds(-8).startStr; // últimas 8 semanas
+
+    const [ordersRes, paymentsRes, closingsRes] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from).order('created_at', {
+      ascending: false
+    }), db.from('payments').select('*').eq('type', 'client_charge').eq('reference_id', profile.id).order('created_at', {
+      ascending: false
+    }).limit(20), db.from('daily_closings').select('*').eq('client_id', profile.id).gte('date', getWeekBounds(-4).startStr).order('date', {
+      ascending: false
+    }).limit(30)]);
+    const orders = ordersRes.data || [];
+    const payments = paymentsRes.data || [];
+    const closings = closingsRes.data || [];
+    const currOrders = orders.filter(o => {
+      var _o$created_at, _o$created_at2;
+      return ((_o$created_at = o.created_at) === null || _o$created_at === void 0 ? void 0 : _o$created_at.slice(0, 10)) >= wC.startStr && ((_o$created_at2 = o.created_at) === null || _o$created_at2 === void 0 ? void 0 : _o$created_at2.slice(0, 10)) <= wC.endStr;
+    });
+    const prevOrders = orders.filter(o => {
+      var _o$created_at3, _o$created_at4;
+      return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
+    });
+    const sumPrice = arr => arr.reduce((a, o) => a + (+o.price || 0), 0);
+
+    // Group by courier for current week
+    const byCourier = {};
+    currOrders.forEach(o => {
+      if (!o.courier_id) return;
+      if (!byCourier[o.courier_id]) byCourier[o.courier_id] = {
+        id: o.courier_id,
+        name: o.courier_name,
+        number: o.courier_number,
+        count: 0,
+        total: 0
+      };
+      byCourier[o.courier_id].count++;
+      byCourier[o.courier_id].total += +o.price || 0;
+    });
+
+    // Group all orders by week
+    const byWeek = {};
+    orders.forEach(o => {
+      var _o$created_at5;
+      const d = ((_o$created_at5 = o.created_at) === null || _o$created_at5 === void 0 ? void 0 : _o$created_at5.slice(0, 10)) || '';
+      if (!d) return;
+      // Find week start (Monday)
+      const dt = parseDate(d);
+      const dow = dt.getDay();
+      const diff = dow === 0 ? -6 : 1 - dow;
+      const mon = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + diff);
+      const wk = mon.getFullYear() + '-' + String(mon.getMonth() + 1).padStart(2, '0') + '-' + String(mon.getDate()).padStart(2, '0');
+      if (!byWeek[wk]) byWeek[wk] = {
+        weekStart: wk,
+        count: 0,
+        total: 0,
+        orders: []
+      };
+      byWeek[wk].count++;
+      byWeek[wk].total += +o.price || 0;
+      byWeek[wk].orders.push(o);
+    });
+    const prevPayment = payments.find(p => p.week_start === wP.startStr);
+    setData({
+      wC,
+      wP,
+      currOrders,
+      prevOrders,
+      currTotal: sumPrice(currOrders),
+      prevTotal: sumPrice(prevOrders),
+      byCourier: Object.values(byCourier),
+      byWeek: Object.values(byWeek).sort((a, b) => b.weekStart.localeCompare(a.weekStart)),
+      payments,
+      closings,
+      prevPayment
+    });
+    setLoading(false);
+  }, [profile]);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+  useEffect(() => {
+    if (!profile) return;
+    const sub = db.channel('clientfin-' + profile.id).on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'orders',
+      filter: `client_id=eq.${profile.id}`
+    }, loadData).on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'payments'
+    }, loadData).subscribe();
+    return () => db.removeChannel(sub);
+  }, [profile, loadData]);
+  if (loading) return /*#__PURE__*/React.createElement("div", {
+    className: "screen"
+  }, /*#__PURE__*/React.createElement(Topbar, {
+    title: "Financeiro",
+    onBack: () => setPage('client-orders'),
+    badge: "Cliente",
+    badgeClass: "bc"
+  }), /*#__PURE__*/React.createElement(Loading, null));
+  const {
+    wC,
+    wP,
+    currOrders,
+    prevOrders,
+    currTotal,
+    prevTotal,
+    byCourier,
+    byWeek,
+    payments,
+    closings,
+    prevPayment
+  } = data;
+  const ts = t => ({
+    padding: '9px 14px',
+    fontSize: 13,
+    fontWeight: period === t ? 600 : 400,
+    cursor: 'pointer',
+    color: period === t ? 'var(--blue)' : 'var(--text2)',
+    borderBottom: period === t ? '2px solid var(--blue)' : '2px solid transparent',
+    background: 'none',
+    border: 'none',
+    borderBottom: period === t ? '2px solid var(--blue)' : '2px solid transparent',
+    fontFamily: 'var(--font)'
+  });
+  return /*#__PURE__*/React.createElement("div", {
+    className: "screen"
+  }, /*#__PURE__*/React.createElement(Topbar, {
+    title: "Financeiro",
+    onBack: () => setPage('client-orders'),
+    badge: "Cliente",
+    badgeClass: "bc"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "scroll"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      borderBottom: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    style: ts('week'),
+    onClick: () => setPeriod('week')
+  }, "Esta semana"), /*#__PURE__*/React.createElement("button", {
+    style: ts('prev'),
+    onClick: () => setPeriod('prev')
+  }, "Semana anterior"), /*#__PURE__*/React.createElement("button", {
+    style: ts('history'),
+    onClick: () => setPeriod('history')
+  }, "Hist\xF3rico")), period === 'week' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '14px 14px 0'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)',
+      marginBottom: 10
+    }
+  }, fmtDate(wC.startStr), " a ", fmtDate(wC.endStr)), /*#__PURE__*/React.createElement("div", {
+    className: "kgrid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(currTotal)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "total a pagar")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval"
+  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "entregas"))), currOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "notice ni",
+    style: {
+      marginTop: 8
+    }
+  }, "Nenhuma entrega esta semana ainda.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "stitle",
+    style: {
+      padding: '12px 0 6px'
+    }
+  }, "Por entregador"), byCourier.sort((a, b) => b.count - a.count).map(co => {
+    var _co$name;
+    return /*#__PURE__*/React.createElement("div", {
+      key: co.id,
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 0',
+        borderBottom: '1px solid var(--border)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 34,
+        height: 34,
+        borderRadius: '50%',
+        background: 'var(--green-l)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 13,
+        fontWeight: 700,
+        color: 'var(--green)',
+        flexShrink: 0
+      }
+    }, co.number ? '#' + co.number : (_co$name = co.name) === null || _co$name === void 0 ? void 0 : _co$name.split(' ').map(n => n[0]).join('').slice(0, 2)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600
+      }
+    }, co.name), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text2)'
+      }
+    }, co.count, " entrega", co.count !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 14,
+        fontWeight: 700,
+        color: 'var(--blue)'
+      }
+    }, fmtMoney(co.total)));
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "stitle",
+    style: {
+      padding: '12px 0 6px'
+    }
+  }, "Detalhado"), currOrders.map((o, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '8px 0',
+      borderBottom: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500
+    }
+  }, o.neighborhood || '—'), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, fmtDate(o.created_at), " \xB7 ", o.courier_name || '—')), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(o.price)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: '12px 0',
+      padding: '12px 14px',
+      background: 'var(--blue-l)',
+      borderRadius: 'var(--rs)',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center'
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: 'var(--blue)'
+    }
+  }, "Total da semana"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--blue)'
+    }
+  }, "Vence na pr\xF3xima quarta-feira")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(currTotal)))))), period === 'prev' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '14px 14px 0'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)',
+      marginBottom: 10
+    }
+  }, fmtDate(wP.startStr), " a ", fmtDate(wP.endStr)), /*#__PURE__*/React.createElement("div", {
+    className: "kgrid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(prevTotal)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "total cobrado")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval"
+  }, prevOrders.length), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "entregas"))), prevPayment ? prevPayment.status === 'paid' ? /*#__PURE__*/React.createElement("div", {
+    className: "notice ns",
+    style: {
+      margin: '10px 0'
+    }
+  }, "\u2705 Pagamento confirmado em ", fmtDate(prevPayment.paid_at)) : /*#__PURE__*/React.createElement("div", {
+    className: "notice",
+    style: {
+      margin: '10px 0',
+      background: 'var(--amber-l)',
+      color: 'var(--amber)'
+    }
+  }, "\u23F3 Pagamento pendente \u2014 aguardando confirma\xE7\xE3o") : /*#__PURE__*/React.createElement("div", {
+    className: "notice ni",
+    style: {
+      margin: '10px 0'
+    }
+  }, "Cobran\xE7a ainda n\xE3o gerada pelo admin."), prevOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "notice ni"
+  }, "Nenhuma entrega na semana anterior.") : prevOrders.map((o, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '8px 0',
+      borderBottom: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500
+    }
+  }, o.neighborhood || '—'), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, fmtDate(o.created_at), " \xB7 ", o.courier_name || '—')), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(o.price)))))), period === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '14px 14px 0'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "stitle",
+    style: {
+      padding: '0 0 10px'
+    }
+  }, "Semanas anteriores"), byWeek.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
+    icon: "\uD83D\uDCCA",
+    text: "Nenhum hist\xF3rico ainda."
+  }) : byWeek.map(wk => {
+    const pay = payments.find(p => p.week_start === wk.weekStart);
+    const mon = parseDate(wk.weekStart + 'T12:00:00');
+    const sun = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6);
+    return /*#__PURE__*/React.createElement("div", {
+      key: wk.weekStart,
+      className: "ocard",
+      style: {
+        margin: '0 0 8px'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        marginBottom: 6
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600
+      }
+    }, fmtDate(wk.weekStart), " \u2013 ", fmtDate(sun.getFullYear() + '-' + String(sun.getMonth() + 1).padStart(2, '0') + '-' + String(sun.getDate()).padStart(2, '0'))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text2)'
+      }
+    }, wk.count, " entrega", wk.count !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: 'right'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 700,
+        color: 'var(--blue)'
+      }
+    }, fmtMoney(wk.total)), pay && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        padding: '2px 7px',
+        borderRadius: 10,
+        fontWeight: 600,
+        background: pay.status === 'paid' ? 'var(--green-l)' : 'var(--amber-l)',
+        color: pay.status === 'paid' ? 'var(--green)' : 'var(--amber)'
+      }
+    }, pay.status === 'paid' ? '✅ Pago' : '⏳ Pendente'))));
+  })))));
+}
 function ClientOrders({
   setPage,
   setTrackId
@@ -2507,8 +2967,8 @@ function ClientOrders({
     icon: "\uD83D\uDCE6",
     text: "Nenhum pedido ainda. Crie seu primeiro!"
   }) : /*#__PURE__*/React.createElement(React.Fragment, null, Object.entries(orders.reduce((acc, o) => {
-    var _o$created_at;
-    const d = ((_o$created_at = o.created_at) === null || _o$created_at === void 0 ? void 0 : _o$created_at.slice(0, 10)) || '';
+    var _o$created_at6;
+    const d = ((_o$created_at6 = o.created_at) === null || _o$created_at6 === void 0 ? void 0 : _o$created_at6.slice(0, 10)) || '';
     if (!acc[d]) acc[d] = [];
     acc[d].push(o);
     return acc;
@@ -2557,6 +3017,11 @@ function ClientOrders({
   }, /*#__PURE__*/React.createElement("span", {
     className: "tab-icon"
   }, "\u2705"), /*#__PURE__*/React.createElement("span", null, "Fechamento")), /*#__PURE__*/React.createElement("button", {
+    className: "tab-item",
+    onClick: () => setPage('client-fin')
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "tab-icon"
+  }, "\uD83D\uDCB0"), /*#__PURE__*/React.createElement("span", null, "Financeiro")), /*#__PURE__*/React.createElement("button", {
     className: "tab-item",
     onClick: () => setPage('profile')
   }, /*#__PURE__*/React.createElement("span", {
@@ -3064,8 +3529,8 @@ function CourierCard({
     const acceptRate = total > 0 ? Math.round(done.length / total * 100) : 100;
     // Streak — days with at least 1 delivery
     const days = new Set(done.map(o => {
-      var _o$created_at2;
-      return (_o$created_at2 = o.created_at) === null || _o$created_at2 === void 0 ? void 0 : _o$created_at2.slice(0, 10);
+      var _o$created_at7;
+      return (_o$created_at7 = o.created_at) === null || _o$created_at7 === void 0 ? void 0 : _o$created_at7.slice(0, 10);
     })).size;
     const streak = Math.min(days, 30);
     setStats({
@@ -3931,10 +4396,7 @@ function CourierFin({
   const toast = useToast();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    loadData();
-  }, [profile]);
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!profile) return;
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1),
@@ -3952,12 +4414,12 @@ function CourierFin({
       network = ne.data || [],
       bonuses = bo.data || [];
     const curr = orders.filter(o => {
-        var _o$created_at3, _o$created_at4;
-        return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wC.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wC.endStr;
+        var _o$created_at8, _o$created_at9;
+        return ((_o$created_at8 = o.created_at) === null || _o$created_at8 === void 0 ? void 0 : _o$created_at8.slice(0, 10)) >= wC.startStr && ((_o$created_at9 = o.created_at) === null || _o$created_at9 === void 0 ? void 0 : _o$created_at9.slice(0, 10)) <= wC.endStr;
       }),
       prev = orders.filter(o => {
-        var _o$created_at5, _o$created_at6;
-        return ((_o$created_at5 = o.created_at) === null || _o$created_at5 === void 0 ? void 0 : _o$created_at5.slice(0, 10)) >= wP.startStr && ((_o$created_at6 = o.created_at) === null || _o$created_at6 === void 0 ? void 0 : _o$created_at6.slice(0, 10)) <= wP.endStr;
+        var _o$created_at0, _o$created_at1;
+        return ((_o$created_at0 = o.created_at) === null || _o$created_at0 === void 0 ? void 0 : _o$created_at0.slice(0, 10)) >= wP.startStr && ((_o$created_at1 = o.created_at) === null || _o$created_at1 === void 0 ? void 0 : _o$created_at1.slice(0, 10)) <= wP.endStr;
       });
     const earn = a => a.reduce((s, o) => s + (o.courier_price ? +o.courier_price : +o.price * .8), 0);
     setData({
@@ -3973,7 +4435,27 @@ function CourierFin({
       bonuses
     });
     setLoading(false);
-  };
+  }, [profile]);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Realtime — atualiza ao concluir entregas
+  useEffect(() => {
+    if (!profile) return;
+    const sub = db.channel('fin-' + profile.id).on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'orders',
+      filter: `courier_id=eq.${profile.id}`
+    }, loadData).on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'referral_bonuses',
+      filter: `earner_id=eq.${profile.id}`
+    }, loadData).subscribe();
+    return () => db.removeChannel(sub);
+  }, [profile, loadData]);
   const copy = link => {
     navigator.clipboard.writeText(link).then(() => toast('Link copiado! ✓')).catch(() => toast('Copie: ' + link));
   };
@@ -9438,7 +9920,7 @@ function App() {
     // If saved page matches user role, restore it; otherwise go to default
     const saved = localStorage.getItem('entregou_page');
     const adminPages = ['admin', 'admin-orders', 'admin-new', 'admin-manual', 'admin-new-client', 'admin-couriers', 'admin-shifts', 'admin-map', 'admin-fin', 'admin-settings'];
-    const clientPages = ['new-order', 'client-orders', 'client-closing', 'track'];
+    const clientPages = ['new-order', 'client-orders', 'client-closing', 'client-fin', 'track'];
     const courierPages = ['courier', 'courier-card', 'courier-shifts', 'courier-closing', 'courier-fin'];
     const validForRole = (role, pg) => {
       if (role === 'admin') return adminPages.includes(pg);
@@ -9521,6 +10003,10 @@ function App() {
         });
       case 'client-closing':
         return /*#__PURE__*/React.createElement(ClientClosing, {
+          setPage: setPage
+        });
+      case 'client-fin':
+        return /*#__PURE__*/React.createElement(ClientFin, {
           setPage: setPage
         });
       case 'admin-shifts':
