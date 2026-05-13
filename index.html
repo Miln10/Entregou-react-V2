@@ -1607,8 +1607,9 @@ function ClientClosing({
   const [pending, setPending] = useState([]);
   const [myClosings, setMyClosings] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [contesting, setContesting] = useState(null); // {closing, quantities}
+  const [contesting, setContesting] = useState(null);
   const [contestQty, setContestQty] = useState({});
+  const [contestDate, setContestDate] = useState('');
   useEffect(() => {
     loadAll();
   }, [profile]);
@@ -1643,12 +1644,12 @@ function ClientClosing({
     loadAll();
   };
   const startContest = closing => {
-    // Pré-preenche com os valores do entregador para o cliente ajustar
     const qty = {};
     (closing.courier_submission || []).forEach(s => {
       qty[s.key] = s.qty;
     });
     setContestQty(qty);
+    setContestDate(closing.date);
     setContesting(closing);
   };
   const submitContest = async () => {
@@ -1661,26 +1662,29 @@ function ClientClosing({
         qty: +v
       };
     });
-    // Check if matches courier
     const cs = contesting.courier_submission || [];
-    const match = submission.every(s => {
+    const dateChanged = contestDate !== contesting.date;
+    const qtyMatch = submission.every(s => {
       const cf = cs.find(x => x.key === s.key);
       return cf && cf.qty === s.qty;
     }) && cs.every(s => {
       const cl = submission.find(x => x.key === s.key);
       return cl && cl.qty === s.qty;
     });
+    const match = qtyMatch && !dateChanged;
     await db.from('daily_closings').update({
       client_submission: submission,
+      date: contestDate || contesting.date,
       status: match ? 'matched' : 'diverged',
       ...(match && {
         agreed_data: submission
       }),
       updated_at: new Date().toISOString()
     }).eq('id', contesting.id);
-    toast(match ? '✅ Confirmado!' : '⚠️ Contestação enviada ao entregador.');
+    if (dateChanged) toast('📅 Data corrigida para ' + contestDate + (match ? '  ✅' : '  ⚠️ Aguardando entregador confirmar nova data.'));else toast(match ? '✅ Confirmado!' : '⚠️ Contestação enviada ao entregador.');
     setContesting(null);
     setContestQty({});
+    setContestDate('');
     loadAll();
   };
   const statusInfo = {
@@ -1846,7 +1850,32 @@ function ClientClosing({
         letterSpacing: '.06em',
         marginBottom: 8
       }
-    }, "Seu lan\xE7amento (ajuste se necess\xE1rio)"), (cl.courier_submission || []).map(s => /*#__PURE__*/React.createElement("div", {
+    }, "Seu lan\xE7amento (ajuste se necess\xE1rio)"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: {
+        fontSize: 12,
+        color: 'var(--text2)',
+        display: 'block',
+        marginBottom: 4
+      }
+    }, "\uD83D\uDCC5 Corrigir data (se necess\xE1rio)"), /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      value: contestDate,
+      onChange: e => setContestDate(e.target.value),
+      style: {
+        fontSize: 13,
+        padding: '6px 10px'
+      }
+    }), contestDate !== cl.date && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--amber)',
+        marginTop: 4
+      }
+    }, "\u26A0\uFE0F Data ser\xE1 alterada de ", fmtDate(cl.date), " para ", fmtDate(contestDate))), (cl.courier_submission || []).map(s => /*#__PURE__*/React.createElement("div", {
       key: s.key,
       style: {
         display: 'flex',
@@ -9356,7 +9385,11 @@ function App() {
     profile,
     loading
   } = useAuth();
-  const [page, setPage] = useState('auth');
+  const [page, setPageState] = useState(() => localStorage.getItem('entregou_page') || 'auth');
+  const setPage = p => {
+    setPageState(p);
+    localStorage.setItem('entregou_page', p);
+  };
   const [trackId, setTrackId] = useState(null);
   const [allocId, setAllocId] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -9364,6 +9397,22 @@ function App() {
     if (loading) return;
     if (!profile) {
       setPage('auth');
+      localStorage.removeItem('entregou_page');
+      return;
+    }
+    // If saved page matches user role, restore it; otherwise go to default
+    const saved = localStorage.getItem('entregou_page');
+    const adminPages = ['admin', 'admin-orders', 'admin-new', 'admin-manual', 'admin-new-client', 'admin-couriers', 'admin-shifts', 'admin-map', 'admin-fin', 'admin-settings'];
+    const clientPages = ['new-order', 'client-orders', 'client-closing', 'track'];
+    const courierPages = ['courier', 'courier-card', 'courier-shifts', 'courier-closing', 'courier-fin'];
+    const validForRole = (role, pg) => {
+      if (role === 'admin') return adminPages.includes(pg);
+      if (role === 'client') return clientPages.includes(pg);
+      if (role === 'courier') return courierPages.includes(pg);
+      return false;
+    };
+    if (saved && validForRole(profile.role, saved)) {
+      setPageState(saved);
       return;
     }
     if (profile.role === 'client') setPage('new-order');
