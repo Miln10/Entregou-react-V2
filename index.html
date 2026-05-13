@@ -122,6 +122,9 @@ window.onerror = function(msg, src, line, col, err) {
 };
 </script>
 <script>
+"use strict";
+const React = window.React;
+const ReactDOM = window.ReactDOM;
 const {
   useState,
   useEffect,
@@ -356,6 +359,10 @@ const fmtDate = d => new Date(d).toLocaleDateString('pt-BR', {
   month: '2-digit',
   year: '2-digit'
 });
+const localDateStr = () => {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
 const ago = iso => {
   if (!iso) return '';
   const d = Math.floor((Date.now() - new Date(iso)) / 1000);
@@ -2015,7 +2022,7 @@ function CourierClosing({
   const [selClient, setSelClient] = useState('');
   const [priceItems, setPriceItems] = useState([]);
   const [quantities, setQuantities] = useState({});
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(localDateStr());
   const [loading, setLoading] = useState(false);
   const [myClosings, setMyClosings] = useState([]);
   const [existing, setExisting] = useState(null);
@@ -5288,7 +5295,7 @@ function AdminShifts({
   const loadShifts = async () => {
     if (!selClient) return;
     setLoading(true);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateStr();
     const {
       data
     } = await db.from('shifts').select('*').eq('client_id', selClient).gte('date', today).order('date').order('start_time');
@@ -5849,7 +5856,7 @@ function CourierShifts({
   const load = async () => {
     if (!profile) return;
     setLoading(true);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateStr();
     // All future shifts
     const {
       data: allShifts
@@ -7375,7 +7382,7 @@ function AdminManualDelivery({
   const [selClient, setSelClient] = useState('');
   const [priceItems, setPriceItems] = useState([]);
   const [quantities, setQuantities] = useState({});
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(localDateStr());
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState([]);
