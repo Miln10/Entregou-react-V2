@@ -889,6 +889,10 @@ function NavDrawer({
     label: 'Mapa ao vivo',
     page: 'admin-map'
   }, {
+    icon: '📊',
+    label: 'Relatório',
+    page: 'admin-relatorio'
+  }, {
     icon: '💰',
     label: 'Financeiro',
     page: 'admin-fin'
@@ -934,10 +938,6 @@ function NavDrawer({
     icon: '📅',
     label: 'Turnos',
     page: 'courier-shifts'
-  }, {
-    icon: '✅',
-    label: 'Fechamento',
-    page: 'courier-closing'
   }, {
     icon: '💰',
     label: 'Financeiro',
@@ -1174,6 +1174,7 @@ function AuthPage() {
     setLoading(false);
   };
   const doRegister = async () => {
+    var _auth$user;
     setErr('');
     if (regRole === 'admin') {
       setErr('Cadastro de admin não permitido.');
@@ -1239,28 +1240,60 @@ function AuthPage() {
       setLoading(false);
       return;
     }
+    // Garante que temos o user.id — às vezes o Supabase demora a retornar
+    let userId = auth === null || auth === void 0 ? void 0 : (_auth$user = auth.user) === null || _auth$user === void 0 ? void 0 : _auth$user.id;
+    if (!userId) {
+      var _u$user;
+      // Tenta buscar pelo email
+      await new Promise(r => setTimeout(r, 1000));
+      const {
+        data: u
+      } = await db.auth.getUser();
+      userId = u === null || u === void 0 ? void 0 : (_u$user = u.user) === null || _u$user === void 0 ? void 0 : _u$user.id;
+    }
+    if (!userId) {
+      setErr('Erro ao obter ID do usuário. Tente novamente.');
+      setLoading(false);
+      return;
+    }
     const p = {
-      auth_id: auth.user.id,
+      auth_id: userId,
       name: rgName,
       email: rgEmail,
       role: regRole,
-      phone: rgPhone
+      phone: rgPhone || null
     };
     if (regRole === 'courier') {
       p.vehicle = rgVeh;
       p.plate = rgPlate;
       p.courier_number = await genCourierNumber();
+      if (refId) {
+        p.referred_by = refId;
+        // Gera referral_code automaticamente para o novo entregador também
+        p.referral_code = genCode(rgName);
+      }
     }
-    if (refId) p.referred_by = refId;
     const {
       error: de
     } = await db.from('users').insert(p);
     setLoading(false);
     if (de) {
-      setErr('Erro ao salvar perfil. Execute o SQL no Supabase.');
+      setErr('Erro ao salvar perfil: ' + de.message);
       return;
     }
-    toast('Conta criada! 🎉');
+    // Confirma que referred_by foi salvo
+    if (refId) {
+      const {
+        data: check
+      } = await db.from('users').select('referred_by').eq('auth_id', userId).single();
+      if (!(check !== null && check !== void 0 && check.referred_by)) {
+        // Tenta novamente
+        await db.from('users').update({
+          referred_by: refId
+        }).eq('auth_id', userId);
+      }
+    }
+    toast('Conta criada! 🎉 Bem-vindo à rede!');
   };
   const doForgot = async () => {
     setErr('');
@@ -2232,47 +2265,97 @@ function ClientClosing({
     }, "Entregador: ", (cl.courier_submission || []).reduce((a, x) => a + x.qty, 0), " \xB7 Voc\xEA: ", (cl.client_submission || []).reduce((a, x) => a + x.qty, 0), " entregas"));
   })))));
 }
-function CourierClosing({
+
+// ===== COURIER FIN (unified) =====
+function CourierFin({
   setPage
 }) {
-  var _statusInfo$existing$, _statusInfo$existing$2, _statusInfo$existing$3, _statusInfo$existing$4;
   const {
     profile
   } = useAuth();
   const toast = useToast();
-  const [clients, setClients] = useState([]);
+  const [tab, setTab] = useState('week');
+  const [weekData, setWeekData] = useState(null);
+  const [closings, setClosings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  // Closing form state
   const [selClient, setSelClient] = useState('');
+  const [clients, setClients] = useState([]);
   const [priceItems, setPriceItems] = useState([]);
   const [quantities, setQuantities] = useState({});
   const [date, setDate] = useState(localDateStr());
-  const [loading, setLoading] = useState(false);
-  const [myClosings, setMyClosings] = useState([]);
-  const [existing, setExisting] = useState(null);
-  const [tab, setTab] = useState('launch'); // launch | history
+  const [submitting, setSubmitting] = useState(false);
+  const [launchDay, setLaunchDay] = useState(null); // date string
 
   const loadAll = useCallback(async () => {
     if (!profile) return;
-    // Todos os clientes disponíveis
-    const {
-      data: cls
-    } = await db.from('users').select('id,name').eq('role', 'client').order('name');
-    setClients(cls || []);
-    // Meus fechamentos recentes
-    const {
-      data: hist
-    } = await db.from('daily_closings').select('*').eq('courier_id', profile.id).order('date', {
+    const wC = getWeekBounds(0);
+    const wP = getWeekBounds(-1);
+    const from = wP.startStr;
+    const [ordRes, closRes, cliRes, payRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
-    }).limit(30);
-    setMyClosings(hist || []);
+    }), db.from('daily_closings').select('*').eq('courier_id', profile.id).gte('date', from).order('date', {
+      ascending: false
+    }), db.from('users').select('id,name').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
+      ascending: false
+    }).limit(5)]);
+    const orders = ordRes.data || [];
+    const currOrders = orders.filter(o => {
+      var _o$created_at, _o$created_at2;
+      return ((_o$created_at = o.created_at) === null || _o$created_at === void 0 ? void 0 : _o$created_at.slice(0, 10)) >= wC.startStr && ((_o$created_at2 = o.created_at) === null || _o$created_at2 === void 0 ? void 0 : _o$created_at2.slice(0, 10)) <= wC.endStr;
+    });
+    const prevOrders = orders.filter(o => {
+      var _o$created_at3, _o$created_at4;
+      return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
+    });
+    const currEarnings = currOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const prevEarnings = prevOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
+
+    // Build week days
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(parseDate(wC.startStr + 'T12:00:00'));
+      d.setDate(d.getDate() + i);
+      const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      const dayClosings = (closRes.data || []).filter(cl => cl.date === ds);
+      const dayOrders = currOrders.filter(o => {
+        var _o$created_at5;
+        return ((_o$created_at5 = o.created_at) === null || _o$created_at5 === void 0 ? void 0 : _o$created_at5.slice(0, 10)) === ds;
+      });
+      days.push({
+        date: ds,
+        closings: dayClosings,
+        orders: dayOrders,
+        isToday: ds === localDateStr(),
+        isFuture: ds > localDateStr()
+      });
+    }
+    setWeekData({
+      wC,
+      wP,
+      currOrders,
+      currEarnings,
+      prevOrders,
+      prevEarnings,
+      prevPayment,
+      days
+    });
+    setClosings(closRes.data || []);
+    setClients(cliRes.data || []);
+    setLoading(false);
   }, [profile]);
   useEffect(() => {
     loadAll();
   }, [loadAll]);
-
-  // Realtime — atualiza quando cliente confirma
   useEffect(() => {
     if (!profile) return;
-    const sub = db.channel('closing-courier-' + profile.id).on('postgres_changes', {
+    const sub = db.channel('cfin-' + profile.id).on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'orders',
+      filter: `courier_id=eq.${profile.id}`
+    }, loadAll).on('postgres_changes', {
       event: '*',
       schema: 'public',
       table: 'daily_closings',
@@ -2284,36 +2367,21 @@ function CourierClosing({
     setSelClient(id);
     setQuantities({});
     setPriceItems([]);
-    setExisting(null);
     if (!id) return;
     const items = await getPriceTableForClient(id);
-    setPriceItems(items.map(i => ({
-      ...i,
-      _hidePrice: true
-    })));
-    checkExisting(id, date);
+    setPriceItems(items);
   };
-  const checkExisting = async (clientId, dateVal) => {
-    if (!clientId || !dateVal) return;
-    const {
-      data
-    } = await db.from('daily_closings').select('*').eq('courier_id', profile.id).eq('client_id', clientId).eq('date', dateVal).maybeSingle();
-    setExisting(data);
-  };
-  useEffect(() => {
-    if (selClient) checkExisting(selClient, date);
-  }, [date]);
-  const totalQty = Object.values(quantities).reduce((a, v) => a + (+v || 0), 0);
-  const submit = async () => {
-    if (!selClient) {
-      toast('Selecione o cliente');
+  const submitClosing = async () => {
+    if (!selClient || !date) {
+      toast('Selecione cliente e data');
       return;
     }
+    const totalQty = Object.values(quantities).reduce((a, v) => a + (+v || 0), 0);
     if (totalQty === 0) {
       toast('Informe ao menos 1 entrega');
       return;
     }
-    setLoading(true);
+    setSubmitting(true);
     const client = clients.find(x => x.id === selClient);
     const submission = Object.entries(quantities).filter(([, v]) => +v > 0).map(([k, v]) => {
       const item = priceItems.find(p => (p.neighborhood_key || p.key) === k);
@@ -2323,6 +2391,9 @@ function CourierClosing({
         qty: +v
       };
     });
+    const {
+      data: ex
+    } = await db.from('daily_closings').select('id').eq('courier_id', profile.id).eq('client_id', selClient).eq('date', date).maybeSingle();
     const payload = {
       courier_id: profile.id,
       courier_name: profile.name,
@@ -2332,21 +2403,26 @@ function CourierClosing({
       date,
       courier_submission: submission,
       status: 'pending',
-      // sempre pending — cliente confirma
       updated_at: localTimestamp()
     };
-    if (existing) {
-      await db.from('daily_closings').update(payload).eq('id', existing.id);
-    } else {
-      await db.from('daily_closings').insert(payload);
-    }
-    setLoading(false);
-    toast('Lançamento enviado! O cliente receberá para confirmar. 📋');
+    if (ex) await db.from('daily_closings').update(payload).eq('id', ex.id);else await db.from('daily_closings').insert(payload);
+    setSubmitting(false);
+    toast('Lançamento enviado! Cliente irá confirmar. 📋');
     setSelClient('');
     setQuantities({});
     setPriceItems([]);
-    setExisting(null);
+    setLaunchDay(null);
     loadAll();
+  };
+  const copy = link => {
+    navigator.clipboard.writeText(link).then(() => toast('Link copiado! ✓')).catch(() => toast('Copie: ' + link));
+  };
+  const share = link => {
+    if (navigator.share) navigator.share({
+      title: 'Entregou',
+      text: 'Cadastre-se como entregador:',
+      url: link
+    });else copy(link);
   };
   const statusInfo = {
     pending: {
@@ -2366,20 +2442,9 @@ function CourierClosing({
       label: 'Divergência',
       color: 'var(--red)',
       bg: 'var(--red-l)'
-    },
-    agreed: {
-      icon: '✅',
-      label: 'Acordado',
-      color: 'var(--green)',
-      bg: 'var(--green-l)'
-    },
-    disputed: {
-      icon: '🔴',
-      label: 'Em disputa',
-      color: 'var(--red)',
-      bg: 'var(--red-l)'
     }
   };
+  const DAYS_PT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
   const ts = t => ({
     padding: '9px 14px',
     fontSize: 13,
@@ -2390,13 +2455,36 @@ function CourierClosing({
     background: 'none',
     border: 'none',
     borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
-    fontFamily: 'var(--font)'
+    fontFamily: 'var(--font)',
+    whiteSpace: 'nowrap'
   });
-  const pendingCount = myClosings.filter(c => c.status === 'pending').length;
+  if (loading) return /*#__PURE__*/React.createElement("div", {
+    className: "screen"
+  }, /*#__PURE__*/React.createElement(Topbar, {
+    title: "Financeiro",
+    onBack: () => setPage('courier'),
+    badge: "Entregador",
+    badgeClass: "bd"
+  }), /*#__PURE__*/React.createElement(Loading, null));
+  const {
+    wC,
+    wP,
+    currOrders,
+    currEarnings,
+    prevOrders,
+    prevEarnings,
+    prevPayment,
+    days
+  } = weekData;
+
+  // Referral data
+  const me = profile;
+  const appUrl = window.location.origin + window.location.pathname;
+  const refLink = me !== null && me !== void 0 && me.referral_code ? appUrl + '?role=courier&ref=' + me.referral_code : null;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Fechamento do dia",
+    title: "Financeiro",
     onBack: () => setPage('courier'),
     badge: "Entregador",
     badgeClass: "bd"
@@ -2405,395 +2493,19 @@ function CourierClosing({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    style: ts('launch'),
-    onClick: () => setTab('launch')
-  }, "\uD83D\uDCCB Lan\xE7ar"), /*#__PURE__*/React.createElement("button", {
-    style: ts('history'),
-    onClick: () => setTab('history')
-  }, "Hist\xF3rico ", pendingCount > 0 && /*#__PURE__*/React.createElement("span", {
-    style: {
-      marginLeft: 4,
-      background: 'var(--amber)',
-      color: 'white',
-      borderRadius: 10,
-      fontSize: 10,
-      padding: '1px 6px',
-      fontWeight: 700
-    }
-  }, pendingCount))), tab === 'launch' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      marginTop: 10,
-      fontSize: 12
-    }
-  }, "Registre suas entregas. O cliente recebe para confirmar com 1 clique."), /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "\uD83D\uDC64 Cliente"), /*#__PURE__*/React.createElement("div", {
-    className: "fgrp"
-  }, /*#__PURE__*/React.createElement("select", {
-    value: selClient,
-    onChange: e => onSelectClient(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "\u2014 Selecione o cliente \u2014"), clients.map(x => /*#__PURE__*/React.createElement("option", {
-    key: x.id,
-    value: x.id
-  }, x.name)))), /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "\uD83D\uDCC5 Data"), /*#__PURE__*/React.createElement("div", {
-    className: "fgrp"
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: date,
-    onChange: e => setDate(e.target.value)
-  })), existing && /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: '0 14px 10px',
-      padding: '10px 14px',
-      borderRadius: 'var(--rs)',
-      background: ((_statusInfo$existing$ = statusInfo[existing.status]) === null || _statusInfo$existing$ === void 0 ? void 0 : _statusInfo$existing$.bg) || 'var(--amber-l)'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600,
-      color: (_statusInfo$existing$2 = statusInfo[existing.status]) === null || _statusInfo$existing$2 === void 0 ? void 0 : _statusInfo$existing$2.color
-    }
-  }, (_statusInfo$existing$3 = statusInfo[existing.status]) === null || _statusInfo$existing$3 === void 0 ? void 0 : _statusInfo$existing$3.icon, " J\xE1 existe lan\xE7amento: ", (_statusInfo$existing$4 = statusInfo[existing.status]) === null || _statusInfo$existing$4 === void 0 ? void 0 : _statusInfo$existing$4.label), existing.status === 'diverged' && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      marginTop: 4,
-      color: 'var(--red)'
-    }
-  }, "Voc\xEA: ", (existing.courier_submission || []).reduce((a, x) => a + x.qty, 0), " \xB7 Cliente: ", (existing.client_submission || []).reduce((a, x) => a + x.qty, 0))), priceItems.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "\uD83D\uDCE6 Suas entregas por regi\xE3o"), /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: '0 14px 8px',
-      fontSize: 12
-    }
-  }, "Informe a quantidade \u2014 os valores s\xE3o controlados pelo admin."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '0 14px'
-    }
-  }, priceItems.map(item => {
-    const key = item.neighborhood_key || item.key;
-    const qty = quantities[key] || 0;
-    return /*#__PURE__*/React.createElement("div", {
-      key: key,
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '10px 0',
-        borderBottom: '1px solid var(--border)'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1,
-        fontSize: 13,
-        fontWeight: 500
-      }
-    }, item.neighborhood_label || item.label), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6
-      }
-    }, /*#__PURE__*/React.createElement("button", {
-      onClick: () => setQuantities(q => ({
-        ...q,
-        [key]: Math.max(0, (q[key] || 0) - 1)
-      })),
-      style: {
-        width: 28,
-        height: 28,
-        borderRadius: '50%',
-        border: '1px solid var(--border)',
-        background: 'var(--bg2)',
-        cursor: 'pointer',
-        fontSize: 16,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-      }
-    }, "\u2212"), /*#__PURE__*/React.createElement("input", {
-      type: "number",
-      min: "0",
-      value: qty || '',
-      onChange: e => setQuantities(q => ({
-        ...q,
-        [key]: Math.max(0, parseInt(e.target.value) || 0)
-      })),
-      placeholder: "0",
-      style: {
-        width: 52,
-        textAlign: 'center',
-        padding: '5px 4px',
-        fontSize: 15,
-        fontWeight: 700
-      }
-    }), /*#__PURE__*/React.createElement("button", {
-      onClick: () => setQuantities(q => ({
-        ...q,
-        [key]: (q[key] || 0) + 1
-      })),
-      style: {
-        width: 28,
-        height: 28,
-        borderRadius: '50%',
-        border: '1px solid var(--blue-l)',
-        background: 'var(--blue-l)',
-        cursor: 'pointer',
-        fontSize: 16,
-        color: 'var(--blue)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-      }
-    }, "+")));
-  })), totalQty > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "pbox",
-    style: {
-      margin: '12px 14px'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "ptotal"
-  }, /*#__PURE__*/React.createElement("span", null, "Total de entregas"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: 'var(--green)',
-      fontSize: 18
-    }
-  }, totalQty))), /*#__PURE__*/React.createElement("button", {
-    className: "btn btn-green",
-    style: {
-      margin: '6px 20px',
-      width: 'calc(100% - 40px)'
-    },
-    onClick: submit,
-    disabled: loading || totalQty === 0
-  }, loading ? 'Enviando...' : '📋 Enviar para o cliente confirmar')), selClient && priceItems.length === 0 && /*#__PURE__*/React.createElement("div", {
-    className: "notice ne"
-  }, "Este cliente n\xE3o tem tabela de pre\xE7os configurada.")), tab === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, myClosings.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
-    icon: "\uD83D\uDCCB",
-    text: "Nenhum fechamento ainda."
-  }) : myClosings.map(cl => {
-    const si = statusInfo[cl.status] || {
-      icon: '?',
-      label: cl.status,
-      color: 'var(--text2)',
-      bg: 'var(--bg2)'
-    };
-    const total = (cl.courier_submission || []).reduce((a, x) => a + x.qty, 0);
-    return /*#__PURE__*/React.createElement("div", {
-      key: cl.id,
-      className: "ocard",
-      style: {
-        margin: '8px 14px'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center'
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 600
-      }
-    }, cl.client_name), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, fmtDate(cl.date), " \xB7 ", total, " entrega", total !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        padding: '3px 9px',
-        borderRadius: 20,
-        fontWeight: 600,
-        background: si.bg,
-        color: si.color
-      }
-    }, si.icon, " ", si.label)), cl.status === 'diverged' && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--red)',
-        marginTop: 6
-      }
-    }, "Voc\xEA: ", total, " \xB7 Cliente confirmou: ", (cl.client_submission || []).reduce((a, x) => a + x.qty, 0), " entregas"));
-  }))));
-}
-
-// ===== CLIENT FIN =====
-function ClientFin({
-  setPage
-}) {
-  const {
-    profile
-  } = useAuth();
-  const toast = useToast();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState('week');
-  const loadData = useCallback(async () => {
-    if (!profile) return;
-    const wC = getWeekBounds(0),
-      wP = getWeekBounds(-1);
-    const from = getWeekBounds(-8).startStr; // últimas 8 semanas
-
-    const [ordersRes, paymentsRes, closingsRes] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from).order('created_at', {
-      ascending: false
-    }), db.from('payments').select('*').eq('type', 'client_charge').eq('reference_id', profile.id).order('created_at', {
-      ascending: false
-    }).limit(20), db.from('daily_closings').select('*').eq('client_id', profile.id).gte('date', getWeekBounds(-4).startStr).order('date', {
-      ascending: false
-    }).limit(30)]);
-    const orders = ordersRes.data || [];
-    const payments = paymentsRes.data || [];
-    const closings = closingsRes.data || [];
-    const currOrders = orders.filter(o => {
-      var _o$created_at, _o$created_at2;
-      return ((_o$created_at = o.created_at) === null || _o$created_at === void 0 ? void 0 : _o$created_at.slice(0, 10)) >= wC.startStr && ((_o$created_at2 = o.created_at) === null || _o$created_at2 === void 0 ? void 0 : _o$created_at2.slice(0, 10)) <= wC.endStr;
-    });
-    const prevOrders = orders.filter(o => {
-      var _o$created_at3, _o$created_at4;
-      return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
-    });
-    const sumPrice = arr => arr.reduce((a, o) => a + (+o.price || 0), 0);
-
-    // Group by courier for current week
-    const byCourier = {};
-    currOrders.forEach(o => {
-      if (!o.courier_id) return;
-      if (!byCourier[o.courier_id]) byCourier[o.courier_id] = {
-        id: o.courier_id,
-        name: o.courier_name,
-        number: o.courier_number,
-        count: 0,
-        total: 0
-      };
-      byCourier[o.courier_id].count++;
-      byCourier[o.courier_id].total += +o.price || 0;
-    });
-
-    // Group all orders by week
-    const byWeek = {};
-    orders.forEach(o => {
-      var _o$created_at5;
-      const d = ((_o$created_at5 = o.created_at) === null || _o$created_at5 === void 0 ? void 0 : _o$created_at5.slice(0, 10)) || '';
-      if (!d) return;
-      // Find week start (Monday)
-      const dt = parseDate(d);
-      const dow = dt.getDay();
-      const diff = dow === 0 ? -6 : 1 - dow;
-      const mon = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + diff);
-      const wk = mon.getFullYear() + '-' + String(mon.getMonth() + 1).padStart(2, '0') + '-' + String(mon.getDate()).padStart(2, '0');
-      if (!byWeek[wk]) byWeek[wk] = {
-        weekStart: wk,
-        count: 0,
-        total: 0,
-        orders: []
-      };
-      byWeek[wk].count++;
-      byWeek[wk].total += +o.price || 0;
-      byWeek[wk].orders.push(o);
-    });
-    const prevPayment = payments.find(p => p.week_start === wP.startStr);
-    setData({
-      wC,
-      wP,
-      currOrders,
-      prevOrders,
-      currTotal: sumPrice(currOrders),
-      prevTotal: sumPrice(prevOrders),
-      byCourier: Object.values(byCourier),
-      byWeek: Object.values(byWeek).sort((a, b) => b.weekStart.localeCompare(a.weekStart)),
-      payments,
-      closings,
-      prevPayment
-    });
-    setLoading(false);
-  }, [profile]);
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-  useEffect(() => {
-    if (!profile) return;
-    const sub = db.channel('clientfin-' + profile.id).on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'orders',
-      filter: `client_id=eq.${profile.id}`
-    }, loadData).on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'payments'
-    }, loadData).subscribe();
-    return () => db.removeChannel(sub);
-  }, [profile, loadData]);
-  if (loading) return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Financeiro",
-    onBack: () => setPage('client-orders'),
-    badge: "Cliente",
-    badgeClass: "bc"
-  }), /*#__PURE__*/React.createElement(Loading, null));
-  const {
-    wC,
-    wP,
-    currOrders,
-    prevOrders,
-    currTotal,
-    prevTotal,
-    byCourier,
-    byWeek,
-    payments,
-    closings,
-    prevPayment
-  } = data;
-  const ts = t => ({
-    padding: '9px 14px',
-    fontSize: 13,
-    fontWeight: period === t ? 600 : 400,
-    cursor: 'pointer',
-    color: period === t ? 'var(--blue)' : 'var(--text2)',
-    borderBottom: period === t ? '2px solid var(--blue)' : '2px solid transparent',
-    background: 'none',
-    border: 'none',
-    borderBottom: period === t ? '2px solid var(--blue)' : '2px solid transparent',
-    fontFamily: 'var(--font)'
-  });
-  return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Financeiro",
-    onBack: () => setPage('client-orders'),
-    badge: "Cliente",
-    badgeClass: "bc"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "scroll"
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      borderBottom: '1px solid var(--border)'
+      borderBottom: '1px solid var(--border)',
+      overflowX: 'auto'
     }
   }, /*#__PURE__*/React.createElement("button", {
     style: ts('week'),
-    onClick: () => setPeriod('week')
-  }, "Esta semana"), /*#__PURE__*/React.createElement("button", {
-    style: ts('prev'),
-    onClick: () => setPeriod('prev')
-  }, "Semana anterior"), /*#__PURE__*/React.createElement("button", {
-    style: ts('history'),
-    onClick: () => setPeriod('history')
-  }, "Hist\xF3rico")), period === 'week' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    onClick: () => setTab('week')
+  }, "\uD83D\uDCB0 Semana"), /*#__PURE__*/React.createElement("button", {
+    style: ts('closings'),
+    onClick: () => setTab('closings')
+  }, "\uD83D\uDCCB Fechamentos"), /*#__PURE__*/React.createElement("button", {
+    style: ts('referral'),
+    onClick: () => setTab('referral')
+  }, "\uD83D\uDD17 Indica\xE7\xE3o")), tab === 'week' && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '14px 14px 0'
     }
@@ -2810,2047 +2522,383 @@ function ClientFin({
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval",
     style: {
-      color: 'var(--blue)'
-    }
-  }, fmtMoney(currTotal)), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "total a pagar")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "entregas"))), currOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      marginTop: 8
-    }
-  }, "Nenhuma entrega esta semana ainda.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "stitle",
-    style: {
-      padding: '12px 0 6px'
-    }
-  }, "Por entregador"), byCourier.sort((a, b) => b.count - a.count).map(co => {
-    var _co$name;
-    return /*#__PURE__*/React.createElement("div", {
-      key: co.id,
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '10px 0',
-        borderBottom: '1px solid var(--border)'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 34,
-        height: 34,
-        borderRadius: '50%',
-        background: 'var(--green-l)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 13,
-        fontWeight: 700,
-        color: 'var(--green)',
-        flexShrink: 0
-      }
-    }, co.number ? '#' + co.number : (_co$name = co.name) === null || _co$name === void 0 ? void 0 : _co$name.split(' ').map(n => n[0]).join('').slice(0, 2)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 600
-      }
-    }, co.name), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, co.count, " entrega", co.count !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 14,
-        fontWeight: 700,
-        color: 'var(--blue)'
-      }
-    }, fmtMoney(co.total)));
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "stitle",
-    style: {
-      padding: '12px 0 6px'
-    }
-  }, "Detalhado"), currOrders.map((o, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      padding: '8px 0',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 500
-    }
-  }, o.neighborhood || '—'), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)'
-    }
-  }, fmtDate(o.created_at), " \xB7 ", o.courier_name || '—')), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: 'var(--blue)'
-    }
-  }, fmtMoney(o.price)))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: '12px 0',
-      padding: '12px 14px',
-      background: 'var(--blue-l)',
-      borderRadius: 'var(--rs)',
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center'
-    }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600,
-      color: 'var(--blue)'
-    }
-  }, "Total da semana"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--blue)'
-    }
-  }, "Vence na pr\xF3xima quarta-feira")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 18,
-      fontWeight: 700,
-      color: 'var(--blue)'
-    }
-  }, fmtMoney(currTotal)))))), period === 'prev' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '14px 14px 0'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)',
-      marginBottom: 10
-    }
-  }, fmtDate(wP.startStr), " a ", fmtDate(wP.endStr)), /*#__PURE__*/React.createElement("div", {
-    className: "kgrid"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
-    style: {
-      color: 'var(--blue)'
-    }
-  }, fmtMoney(prevTotal)), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "total cobrado")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, prevOrders.length), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "entregas"))), prevPayment ? prevPayment.status === 'paid' ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ns",
-    style: {
-      margin: '10px 0'
-    }
-  }, "\u2705 Pagamento confirmado em ", fmtDate(prevPayment.paid_at)) : /*#__PURE__*/React.createElement("div", {
-    className: "notice",
-    style: {
-      margin: '10px 0',
-      background: 'var(--amber-l)',
-      color: 'var(--amber)'
-    }
-  }, "\u23F3 Pagamento pendente \u2014 aguardando confirma\xE7\xE3o") : /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: '10px 0'
-    }
-  }, "Cobran\xE7a ainda n\xE3o gerada pelo admin."), prevOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ni"
-  }, "Nenhuma entrega na semana anterior.") : prevOrders.map((o, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      padding: '8px 0',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 500
-    }
-  }, o.neighborhood || '—'), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)'
-    }
-  }, fmtDate(o.created_at), " \xB7 ", o.courier_name || '—')), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: 'var(--blue)'
-    }
-  }, fmtMoney(o.price)))))), period === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '14px 14px 0'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "stitle",
-    style: {
-      padding: '0 0 10px'
-    }
-  }, "Semanas anteriores"), byWeek.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
-    icon: "\uD83D\uDCCA",
-    text: "Nenhum hist\xF3rico ainda."
-  }) : byWeek.map(wk => {
-    const pay = payments.find(p => p.week_start === wk.weekStart);
-    const mon = parseDate(wk.weekStart + 'T12:00:00');
-    const sun = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6);
-    return /*#__PURE__*/React.createElement("div", {
-      key: wk.weekStart,
-      className: "ocard",
-      style: {
-        margin: '0 0 8px'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        marginBottom: 6
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 600
-      }
-    }, fmtDate(wk.weekStart), " \u2013 ", fmtDate(sun.getFullYear() + '-' + String(sun.getMonth() + 1).padStart(2, '0') + '-' + String(sun.getDate()).padStart(2, '0'))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, wk.count, " entrega", wk.count !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: 'right'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 15,
-        fontWeight: 700,
-        color: 'var(--blue)'
-      }
-    }, fmtMoney(wk.total)), pay && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10,
-        padding: '2px 7px',
-        borderRadius: 10,
-        fontWeight: 600,
-        background: pay.status === 'paid' ? 'var(--green-l)' : 'var(--amber-l)',
-        color: pay.status === 'paid' ? 'var(--green)' : 'var(--amber)'
-      }
-    }, pay.status === 'paid' ? '✅ Pago' : '⏳ Pendente'))));
-  })))));
-}
-function ClientOrders({
-  setPage,
-  setTrackId
-}) {
-  var _profile$name;
-  const {
-    profile
-  } = useAuth();
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const load = useCallback(async () => {
-    if (!profile) return;
-    const {
-      data
-    } = await db.from('orders').select('*').eq('client_id', profile.id).order('created_at', {
-      ascending: false
-    }).limit(100);
-    setOrders(data || []);
-    setLoading(false);
-  }, [profile]);
-  useEffect(() => {
-    load();
-  }, [load]);
-  useEffect(() => {
-    if (!profile) return;
-    const sub = db.channel('co').on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'orders'
-    }, load).subscribe();
-    return () => db.removeChannel(sub);
-  }, [profile, load]);
-  return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-      className: "rdot"
-    }), "Meus pedidos"),
-    badge: profile === null || profile === void 0 ? void 0 : (_profile$name = profile.name) === null || _profile$name === void 0 ? void 0 : _profile$name.split(' ')[0],
-    badgeClass: "bc"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "scroll"
-  }, loading ? /*#__PURE__*/React.createElement(Loading, null) : orders.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
-    icon: "\uD83D\uDCE6",
-    text: "Nenhum pedido ainda. Crie seu primeiro!"
-  }) : /*#__PURE__*/React.createElement(React.Fragment, null, Object.entries(orders.reduce((acc, o) => {
-    var _o$created_at6;
-    const d = ((_o$created_at6 = o.created_at) === null || _o$created_at6 === void 0 ? void 0 : _o$created_at6.slice(0, 10)) || '';
-    if (!acc[d]) acc[d] = [];
-    acc[d].push(o);
-    return acc;
-  }, {})).map(([date, dayOrders]) => /*#__PURE__*/React.createElement("div", {
-    key: date
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '10px 14px 4px',
-      fontSize: 11,
-      fontWeight: 700,
-      color: 'var(--text2)',
-      textTransform: 'uppercase',
-      letterSpacing: '.06em'
-    }
-  }, fmtDate(date)), dayOrders.map(o => /*#__PURE__*/React.createElement(OrderCard, {
-    key: o.id,
-    order: o,
-    actions: ['waiting', 'accepted', 'collecting', 'delivering'].includes(o.status) ? [/*#__PURE__*/React.createElement("button", {
-      key: "t",
-      className: "btn-sm",
-      onClick: () => {
-        setTrackId(o.id);
-        setPage('track');
-      }
-    }, "Rastrear")] : [/*#__PURE__*/React.createElement("span", {
-      key: "d",
-      style: {
-        fontSize: 12,
-        color: 'var(--text2)'
-      }
-    }, o.status === 'done' ? '✓ Concluído' : '✗ Cancelado')]
-  })))))), /*#__PURE__*/React.createElement("div", {
-    className: "tabbar"
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('new-order')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\u2795"), /*#__PURE__*/React.createElement("span", null, "Novo pedido")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item active"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\uD83D\uDCCB"), /*#__PURE__*/React.createElement("span", null, "Pedidos")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('client-closing')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\u2705"), /*#__PURE__*/React.createElement("span", null, "Fechamento")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('client-fin')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\uD83D\uDCB0"), /*#__PURE__*/React.createElement("span", null, "Financeiro")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('profile')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\uD83D\uDC64"), /*#__PURE__*/React.createElement("span", null, "Perfil"))));
-}
-function NewOrder({
-  setPage
-}) {
-  var _BAIRROS$find3;
-  const {
-    profile
-  } = useAuth();
-  const toast = useToast();
-  const DEFAULT_PICKUP = (profile === null || profile === void 0 ? void 0 : profile.address) || 'Loja Icaraí';
-  const [pickup, setPickup] = useState('');
-  const [bairro, setBairro] = useState('');
-  const [delivery, setDelivery] = useState('');
-  const [item, setItem] = useState('');
-  const [pay, setPay] = useState('App');
-  const [loading, setLoading] = useState(false);
-  const prices = bairro ? BAIRRO_PRECO[bairro] : null;
-  const bairroLabel = bairro ? ((_BAIRROS$find3 = BAIRROS.find(([v]) => v === bairro)) === null || _BAIRROS$find3 === void 0 ? void 0 : _BAIRROS$find3[1]) || bairro : '';
-
-  // Set default pickup from profile
-  useEffect(() => {
-    if (profile !== null && profile !== void 0 && profile.address) setPickup(profile.address);
-  }, [profile]);
-  const submit = async () => {
-    if (!bairro) {
-      toast('Selecione o bairro de entrega');
-      return;
-    }
-    if (!item) {
-      toast('Descreva o que será coletado');
-      return;
-    }
-    setLoading(true);
-    // Busca preços reais do Supabase (tabela do cliente → rede → padrão)
-    const priceTable = await getPriceTableForClient(profile.id);
-    const bairroPrice = priceTable.find(p => (p.neighborhood_key || p.key) === bairro) || prices;
-    const clientPrice = bairroPrice ? +(bairroPrice.client_price || bairroPrice.cliente) : (prices === null || prices === void 0 ? void 0 : prices.cliente) || 0;
-    const courierPrice = bairroPrice ? +(bairroPrice.courier_price || bairroPrice.entregador) : (prices === null || prices === void 0 ? void 0 : prices.entregador) || 0;
-    const {
-      error
-    } = await db.from('orders').insert({
-      client_id: profile.id,
-      client_name: profile.name,
-      pickup_addr: pickup || 'Icaraí (a confirmar)',
-      delivery_addr: (delivery ? delivery + ' — ' : '') + bairroLabel,
-      neighborhood: bairro,
-      item_desc: item,
-      pay_method: pay,
-      price: clientPrice,
-      courier_price: courierPrice,
-      status: 'waiting'
-    });
-    setLoading(false);
-    if (error) {
-      toast('Erro ao criar pedido');
-      return;
-    }
-    toast('Pedido criado! Aguardando entregador 🎉');
-    setPage('client-orders');
-  };
-  return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Novo pedido",
-    onBack: () => setPage('client-orders'),
-    badge: "Cliente",
-    badgeClass: "bc"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "scroll"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "\uD83D\uDCCD Local de retirada"), /*#__PURE__*/React.createElement("div", {
-    className: "fgrp"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "Endere\xE7o completo (rua, n\xFAmero, complemento)"), /*#__PURE__*/React.createElement("input", {
-    value: pickup,
-    onChange: e => setPickup(e.target.value),
-    placeholder: "Rua, n\xFAmero, apto, refer\xEAncia..."
-  }), (profile === null || profile === void 0 ? void 0 : profile.address) && pickup !== profile.address && /*#__PURE__*/React.createElement("button", {
-    onClick: () => setPickup(profile.address),
-    style: {
-      marginTop: 5,
-      fontSize: 12,
-      color: 'var(--blue)',
-      background: 'none',
-      border: 'none',
-      cursor: 'pointer',
-      padding: 0,
-      textDecoration: 'underline'
-    }
-  }, "\u21A9 Usar meu endere\xE7o padr\xE3o")), /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "\uD83C\uDFE0 Local de entrega"), /*#__PURE__*/React.createElement("div", {
-    className: "fgrp"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "Bairro"), /*#__PURE__*/React.createElement(BairroSelect, {
-    id: "p-bairro",
-    value: bairro,
-    onChange: setBairro
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "fgrp"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "Endere\xE7o completo (rua, n\xFAmero, complemento)"), /*#__PURE__*/React.createElement("input", {
-    value: delivery,
-    onChange: e => setDelivery(e.target.value),
-    placeholder: "Rua, n\xFAmero, apto, refer\xEAncia... (opcional)"
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "\uD83D\uDCE6 Pacote"), /*#__PURE__*/React.createElement("div", {
-    className: "fgrp"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "O que ser\xE1 coletado?"), /*#__PURE__*/React.createElement("textarea", {
-    value: item,
-    onChange: e => setItem(e.target.value),
-    placeholder: "Ex: 2 marmitas, 1 envelope A4..."
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "fgrp"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "Pagamento"), /*#__PURE__*/React.createElement("select", {
-    value: pay,
-    onChange: e => setPay(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", null, "App"), /*#__PURE__*/React.createElement("option", null, "Pix"), /*#__PURE__*/React.createElement("option", null, "Dinheiro"))), prices && /*#__PURE__*/React.createElement("div", {
-    className: "pbox"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "prow"
-  }, /*#__PURE__*/React.createElement("span", null, "Bairro de entrega"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontWeight: 700,
-      color: 'var(--text)'
-    }
-  }, bairroLabel)), /*#__PURE__*/React.createElement("div", {
-    className: "ptotal"
-  }, /*#__PURE__*/React.createElement("span", null, "Valor da entrega"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: 'var(--blue)',
-      fontSize: 18
-    }
-  }, fmtMoney(prices.cliente))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)',
-      marginTop: 8
-    }
-  }, "\u2713 Valor fixo por bairro \xB7 sem cobran\xE7as extras")), /*#__PURE__*/React.createElement("button", {
-    className: "btn btn-blue",
-    style: {
-      margin: '6px 20px',
-      width: 'calc(100% - 40px)'
-    },
-    onClick: submit,
-    disabled: loading
-  }, loading ? 'Enviando...' : 'Solicitar entregador')));
-}
-function TrackOrder({
-  orderId,
-  setPage
-}) {
-  const [order, setOrder] = useState(null);
-  const [cpos, setCpos] = useState({
-    lat: null,
-    lng: null
-  });
-  const loadOrder = useCallback(async () => {
-    const {
-      data
-    } = await db.from('orders').select('*').eq('id', orderId).single();
-    setOrder(data);
-  }, [orderId]);
-  const loadPos = useCallback(async cid => {
-    if (!cid) return;
-    const {
-      data
-    } = await db.from('users').select('lat,lng').eq('id', cid).single();
-    if (data) setCpos({
-      lat: data.lat,
-      lng: data.lng
-    });
-  }, []);
-  useEffect(() => {
-    loadOrder();
-  }, [loadOrder]);
-  useEffect(() => {
-    const sub = db.channel('to' + orderId).on('postgres_changes', {
-      event: 'UPDATE',
-      schema: 'public',
-      table: 'orders',
-      filter: `id=eq.${orderId}`
-    }, loadOrder).subscribe();
-    return () => db.removeChannel(sub);
-  }, [orderId, loadOrder]);
-  useEffect(() => {
-    if (!(order !== null && order !== void 0 && order.courier_id)) return;
-    loadPos(order.courier_id);
-    const sub = db.channel('tc' + order.courier_id).on('postgres_changes', {
-      event: 'UPDATE',
-      schema: 'public',
-      table: 'users',
-      filter: `id=eq.${order.courier_id}`
-    }, () => loadPos(order.courier_id)).subscribe();
-    return () => db.removeChannel(sub);
-  }, [order === null || order === void 0 ? void 0 : order.courier_id, loadPos]);
-  if (!order) return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Loading, null));
-  const labels = {
-    waiting: 'Aguardando entregador',
-    accepted: 'Entregador a caminho',
-    collecting: 'Coletando pedido',
-    delivering: 'Em rota de entrega',
-    done: 'Entregue!',
-    cancelled: 'Cancelado'
-  };
-  const steps = [{
-    l: 'Pedido criado',
-    d: true
-  }, {
-    l: 'Entregador aceito',
-    d: ['accepted', 'collecting', 'delivering', 'done'].includes(order.status)
-  }, {
-    l: 'Pedido coletado',
-    d: ['collecting', 'delivering', 'done'].includes(order.status)
-  }, {
-    l: 'Em rota de entrega',
-    d: ['delivering', 'done'].includes(order.status)
-  }, {
-    l: 'Entregue',
-    d: order.status === 'done'
-  }];
-  const showMap = ['accepted', 'collecting', 'delivering'].includes(order.status);
-  return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Rastrear pedido",
-    onBack: () => setPage('client-orders')
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "scroll"
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: '12px 14px 8px',
-      padding: '10px 14px',
-      background: order.status === 'done' ? 'var(--green-l)' : order.status === 'cancelled' ? 'var(--red-l)' : 'var(--blue-l)',
-      borderRadius: 'var(--rs)',
-      textAlign: 'center'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 20,
-      marginBottom: 4
-    }
-  }, order.status === 'waiting' ? '⏳' : order.status === 'done' ? '✅' : order.status === 'cancelled' ? '❌' : '🛵'), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600,
-      color: order.status === 'done' ? 'var(--green)' : order.status === 'cancelled' ? 'var(--red)' : 'var(--blue)'
-    }
-  }, labels[order.status])), showMap && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '8px 14px 4px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 6
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "rdot"
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: 'var(--text2)',
-      fontWeight: 600
-    }
-  }, "Localiza\xE7\xE3o ao vivo")), /*#__PURE__*/React.createElement(LiveMap, {
-    courierLat: cpos.lat,
-    courierLng: cpos.lng,
-    courierName: order.courier_name,
-    status: order.status
-  })), order.courier_name && /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: '0 14px 10px',
-      padding: '12px 14px',
-      background: 'var(--bg2)',
-      borderRadius: 'var(--rs)',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 40,
-      height: 40,
-      borderRadius: '50%',
-      background: 'var(--green-l)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexShrink: 0,
-      position: 'relative'
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 16
-    }
-  }, "\uD83D\uDEF5"), order.courier_number && /*#__PURE__*/React.createElement("span", {
-    style: {
-      position: 'absolute',
-      bottom: -4,
-      right: -4,
-      background: 'var(--blue)',
-      color: 'white',
-      fontSize: 9,
-      fontWeight: 800,
-      padding: '1px 4px',
-      borderRadius: 8,
-      border: '1.5px solid white'
-    }
-  }, "#", order.courier_number)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600
-    }
-  }, order.courier_name, order.courier_number && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: 'var(--blue)',
-      marginLeft: 6,
-      fontWeight: 700
-    }
-  }, "#", order.courier_number)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)'
-    }
-  }, cpos.lat ? '📍 Localização ativa' : '★ Entregador a caminho')), order.courier_phone && /*#__PURE__*/React.createElement("a", {
-    href: `https://wa.me/55${order.courier_phone.replace(/\D/g, '')}`,
-    target: "_blank",
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 5,
-      padding: '7px 12px',
-      background: '#25D366',
-      color: 'white',
-      borderRadius: 'var(--rs)',
-      textDecoration: 'none',
-      fontSize: 12,
-      fontWeight: 600,
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCAC"), /*#__PURE__*/React.createElement("span", null, "Zap"))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '8px 14px',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 7
-    }
-  }, steps.map((s, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 22,
-      height: 22,
-      borderRadius: '50%',
-      border: '1px solid var(--border)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexShrink: 0,
-      background: s.d ? 'var(--green)' : 'transparent',
-      borderColor: s.d ? 'var(--green)' : 'var(--border)',
-      fontSize: 11,
-      color: 'white',
-      fontWeight: 700
-    }
-  }, s.d ? '✓' : ''), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 13,
-      color: s.d ? 'var(--text)' : 'var(--text2)'
-    }
-  }, s.l)))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '4px 14px 16px'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '10px 12px',
-      background: 'var(--bg2)',
-      borderRadius: 'var(--rs)',
-      marginTop: 4
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)',
-      marginBottom: 4
-    }
-  }, "Conte\xFAdo"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13
-    }
-  }, order.item_desc)))));
-}
-
-// ===== COURIER PAGES =====
-
-// ===== COURIER PLAYER CARD =====
-function CourierCard({
-  setPage
-}) {
-  var _profile$name2;
-  const {
-    profile
-  } = useAuth();
-  const [stats, setStats] = useState(null);
-  const [ranking, setRanking] = useState([]);
-  const [rankTab, setRankTab] = useState('geral');
-  const radarRef = useRef(null);
-  const radarChart = useRef(null);
-  const LEVELS = [{
-    name: 'Recruta',
-    min: 0,
-    color: '#888780',
-    bg: '#F1EFE8'
-  }, {
-    name: 'Ativo',
-    min: 100,
-    color: '#185FA5',
-    bg: '#E6F1FB'
-  }, {
-    name: 'Experiente',
-    min: 300,
-    color: '#3B6D11',
-    bg: '#EAF3DE'
-  }, {
-    name: 'Veterano',
-    min: 700,
-    color: '#854F0B',
-    bg: '#FAEEDA'
-  }, {
-    name: 'Elite',
-    min: 1500,
-    color: '#534AB7',
-    bg: '#EEEDFE'
-  }, {
-    name: 'Lendário',
-    min: 3000,
-    color: '#993556',
-    bg: '#FBEAF0'
-  }];
-  const getLevel = xp => {
-    for (let i = LEVELS.length - 1; i >= 0; i--) if (xp >= LEVELS[i].min) return LEVELS[i];
-    return LEVELS[0];
-  };
-  const calcAttrs = s => ({
-    pontualidade: Math.min(99, 60 + Math.round((s.deliveries || 0) * 0.15 + (s.streak || 0) * 1.5)),
-    cuidado: Math.min(99, 70 + Math.round((s.deliveries || 0) * 0.05)),
-    velocidade: Math.min(99, 55 + Math.round((s.deliveries || 0) * 0.2)),
-    aceitacao: Math.min(99, Math.round(s.acceptRate || 75)),
-    rotas: Math.min(99, 60 + (s.regions || 0) * 5 + Math.round((s.deliveries || 0) * 0.05)),
-    consistencia: Math.min(99, 50 + (s.streak || 0) * 2 + Math.round((s.deliveries || 0) * 0.08))
-  });
-  const calcOverall = attrs => Math.round(Object.values(attrs).reduce((a, v) => a + v, 0) / 6);
-  const calcXP = s => {
-    let xp = (s.deliveries || 0) * 10;
-    if ((s.streak || 0) >= 7) xp += 70;
-    if ((s.streak || 0) >= 30) xp += 150;
-    if ((s.regions || 0) >= 3) xp += 30;
-    if ((s.regions || 0) >= 5) xp += 60;
-    return xp;
-  };
-  useEffect(() => {
-    loadStats();
-  }, [profile]);
-  const loadStats = async () => {
-    if (!profile) return;
-    // My deliveries
-    const {
-      data: orders
-    } = await db.from('orders').select('neighborhood,created_at,status').eq('courier_id', profile.id);
-    const done = (orders || []).filter(o => o.status === 'done');
-    const deliveries = done.length;
-    const regions = new Set(done.map(o => o.neighborhood).filter(Boolean)).size;
-    // Accept rate
-    const {
-      data: allOrders
-    } = await db.from('orders').select('status').eq('courier_id', profile.id);
-    const total = (allOrders || []).length;
-    const acceptRate = total > 0 ? Math.round(done.length / total * 100) : 100;
-    // Streak — days with at least 1 delivery
-    const days = new Set(done.map(o => {
-      var _o$created_at7;
-      return (_o$created_at7 = o.created_at) === null || _o$created_at7 === void 0 ? void 0 : _o$created_at7.slice(0, 10);
-    })).size;
-    const streak = Math.min(days, 30);
-    setStats({
-      deliveries,
-      regions,
-      acceptRate,
-      streak
-    });
-    // Load ranking
-    const {
-      data: couriers
-    } = await db.from('users').select('id,name,courier_number').eq('role', 'courier');
-    const {
-      data: allDone
-    } = await db.from('orders').select('courier_id,neighborhood').eq('status', 'done');
-    const rankData = (couriers || []).map(co => {
-      const myOrders = (allDone || []).filter(o => o.courier_id === co.id);
-      const d = myOrders.length;
-      const r = new Set(myOrders.map(o => o.neighborhood).filter(Boolean)).size;
-      const xp = d * 10 + (r >= 3 ? 30 : 0) + (r >= 5 ? 60 : 0);
-      return {
-        id: co.id,
-        name: co.name,
-        number: co.courier_number,
-        deliveries: d,
-        regions: r,
-        xp,
-        isMe: co.id === profile.id
-      };
-    }).sort((a, b) => b.xp - a.xp);
-    setRanking(rankData);
-  };
-  useEffect(() => {
-    if (!stats || !radarRef.current) return;
-    const attrs = calcAttrs(stats);
-    if (radarChart.current) {
-      radarChart.current.destroy();
-      radarChart.current = null;
-    }
-    const L = window.Chart;
-    if (!L) return;
-    radarChart.current = new L(radarRef.current, {
-      type: 'radar',
-      data: {
-        labels: ['Pontual.', 'Cuidado', 'Veloc.', 'Aceite', 'Rotas', 'Consist.'],
-        datasets: [{
-          data: Object.values(attrs),
-          backgroundColor: 'rgba(24,95,165,0.12)',
-          borderColor: '#185FA5',
-          borderWidth: 1.5,
-          pointBackgroundColor: '#185FA5',
-          pointRadius: 3
-        }]
-      },
-      options: {
-        responsive: false,
-        plugins: {
-          legend: {
-            display: false
-          }
-        },
-        scales: {
-          r: {
-            min: 0,
-            max: 100,
-            ticks: {
-              display: false,
-              stepSize: 25
-            },
-            grid: {
-              color: 'rgba(128,128,128,0.2)'
-            },
-            pointLabels: {
-              font: {
-                size: 10
-              },
-              color: '#888780'
-            },
-            angleLines: {
-              color: 'rgba(128,128,128,0.2)'
-            }
-          }
-        }
-      }
-    });
-    return () => {
-      if (radarChart.current) {
-        radarChart.current.destroy();
-        radarChart.current = null;
-      }
-    };
-  }, [stats]);
-  if (!stats) return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Meu card",
-    onBack: () => setPage('courier'),
-    badge: "Entregador",
-    badgeClass: "bd"
-  }), /*#__PURE__*/React.createElement(Loading, null));
-  const attrs = calcAttrs(stats);
-  const overall = calcOverall(attrs);
-  const xp = calcXP(stats);
-  const lv = getLevel(xp);
-  const nextLv = LEVELS[LEVELS.indexOf(lv) + 1];
-  const pct = nextLv ? Math.round((xp - lv.min) / (nextLv.min - lv.min) * 100) : 100;
-  const ATTR_LIST = [{
-    key: 'pontualidade',
-    label: 'Pontualidade',
-    color: '#185FA5'
-  }, {
-    key: 'cuidado',
-    label: 'Cuidado c/ pacote',
-    color: '#3B6D11'
-  }, {
-    key: 'velocidade',
-    label: 'Velocidade',
-    color: '#854F0B'
-  }, {
-    key: 'aceitacao',
-    label: 'Taxa de aceite',
-    color: '#534AB7'
-  }, {
-    key: 'rotas',
-    label: 'Conh. de rotas',
-    color: '#993556'
-  }, {
-    key: 'consistencia',
-    label: 'Consistência',
-    color: '#185FA5'
-  }];
-  const medals = ['🥇', '🥈', '🥉'];
-  const myRankPos = ranking.findIndex(r => r.isMe);
-  return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Meu card",
-    onBack: () => setPage('courier'),
-    badge: "Entregador",
-    badgeClass: "bd"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "scroll"
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: '12px 14px',
-      padding: '16px',
-      background: 'var(--bg2)',
-      borderRadius: 'var(--r)',
-      border: '1px solid var(--border)',
-      display: 'flex',
-      gap: 14,
-      flexWrap: 'wrap'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: 6,
-      minWidth: 90
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 56,
-      height: 56,
-      borderRadius: '50%',
-      background: 'var(--bg)',
-      border: `2px solid ${lv.color}`,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontSize: 16,
-      fontWeight: 700,
-      color: lv.color
-    }
-  }, profile === null || profile === void 0 ? void 0 : (_profile$name2 = profile.name) === null || _profile$name2 === void 0 ? void 0 : _profile$name2.split(' ').map(n => n[0]).join('').slice(0, 2)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 40,
-      fontWeight: 700,
-      color: 'var(--text)',
-      lineHeight: 1
-    }
-  }, overall), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      fontWeight: 700,
-      padding: '2px 8px',
-      borderRadius: 20,
-      background: lv.bg,
-      color: lv.color,
-      border: `1px solid ${lv.color}`
-    }
-  }, lv.name), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 600,
-      color: 'var(--text2)'
-    }
-  }, "#", (profile === null || profile === void 0 ? void 0 : profile.courier_number) || '—'), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: 'var(--text)',
-      fontWeight: 600,
-      textAlign: 'center'
-    }
-  }, profile === null || profile === void 0 ? void 0 : profile.name), /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: '100%'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: 4,
-      background: 'var(--bg)',
-      borderRadius: 2,
-      overflow: 'hidden',
-      marginTop: 4
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: '100%',
-      width: pct + '%',
-      background: lv.color,
-      borderRadius: 2
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: 'var(--text2)',
-      marginTop: 3,
-      textAlign: 'center'
-    }
-  }, xp, " XP"))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1,
-      minWidth: 150
-    }
-  }, ATTR_LIST.map(a => /*#__PURE__*/React.createElement("div", {
-    key: a.key,
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 6,
-      padding: '4px 0',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 14,
-      fontWeight: 700,
-      color: 'var(--text)',
-      width: 26,
-      textAlign: 'right',
-      flexShrink: 0
-    }
-  }, attrs[a.key]), /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1,
-      height: 5,
-      background: 'var(--bg)',
-      borderRadius: 3,
-      overflow: 'hidden'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: '100%',
-      width: attrs[a.key] + '%',
-      background: a.color,
-      borderRadius: 3
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)',
-      width: 100,
-      flexShrink: 0
-    }
-  }, a.label)))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: 4
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: 'var(--text2)'
-    }
-  }, "Radar"), /*#__PURE__*/React.createElement("canvas", {
-    ref: radarRef,
-    width: 140,
-    height: 140,
-    role: "img",
-    "aria-label": "Radar de atributos"
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "mrow"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, stats.deliveries), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "entregas")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
-    style: {
       color: 'var(--green)'
     }
-  }, stats.streak), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "dias seguidos")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
-    style: {
-      color: 'var(--blue)'
-    }
-  }, stats.regions), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "regi\xF5es")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
-    style: {
-      color: 'var(--amber)'
-    }
-  }, stats.acceptRate, "%"), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "aceite"))), /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "Ranking de entregadores"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      gap: 0,
-      borderBottom: '1px solid var(--border)',
-      margin: '0 14px 10px'
-    }
-  }, [['geral', 'Geral'], ['semana', 'Esta semana']].map(([v, l]) => /*#__PURE__*/React.createElement("button", {
-    key: v,
-    onClick: () => setRankTab(v),
-    style: {
-      padding: '8px 14px',
-      fontSize: 13,
-      fontWeight: rankTab === v ? 600 : 400,
-      cursor: 'pointer',
-      color: rankTab === v ? 'var(--blue)' : 'var(--text2)',
-      borderBottom: rankTab === v ? '2px solid var(--blue)' : '2px solid transparent',
-      background: 'none',
-      border: 'none',
-      borderBottom: rankTab === v ? '2px solid var(--blue)' : '2px solid transparent',
-      fontFamily: 'var(--font)'
-    }
-  }, l))), ranking.slice(0, 10).map((r, i) => {
-    var _r$name;
-    return /*#__PURE__*/React.createElement("div", {
-      key: r.id,
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '10px 14px',
-        borderBottom: '1px solid var(--border)',
-        background: r.isMe ? 'var(--blue-l)' : 'transparent'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 24,
-        textAlign: 'center',
-        fontSize: 14,
-        fontWeight: 700,
-        color: i < 3 ? ['#BA7517', '#888780', '#993C1D'][i] : 'var(--text2)',
-        flexShrink: 0
-      }
-    }, i < 3 ? medals[i] : i + 1), /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 32,
-        height: 32,
-        borderRadius: '50%',
-        background: r.isMe ? 'var(--blue)' : 'var(--bg2)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 12,
-        fontWeight: 700,
-        color: r.isMe ? 'white' : 'var(--text2)',
-        flexShrink: 0
-      }
-    }, (_r$name = r.name) === null || _r$name === void 0 ? void 0 : _r$name.split(' ').map(n => n[0]).join('').slice(0, 2)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: r.isMe ? 700 : 500,
-        color: 'var(--text)'
-      }
-    }, r.name, r.isMe ? ' (você)' : ''), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, "#", r.number || '—', " \xB7 ", r.deliveries, " entregas \xB7 ", r.regions, " regi\xF5es")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 600,
-        color: i === 0 ? '#BA7517' : 'var(--text2)'
-      }
-    }, r.xp, " XP"));
-  }), myRankPos >= 0 && myRankPos >= 10 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: '8px 14px',
-      padding: '10px 14px',
-      background: 'var(--blue-l)',
-      borderRadius: 'var(--rs)',
-      fontSize: 13,
-      color: 'var(--blue)',
-      fontWeight: 600
-    }
-  }, "Sua posi\xE7\xE3o no ranking: #", myRankPos + 1)));
-}
-function CourierDash({
-  setPage
-}) {
-  var _profile$name3;
-  const {
-    profile
-  } = useAuth();
-  const toast = useToast();
-  const [online, setOnline] = useState(true);
-  const [available, setAvailable] = useState([]);
-  const [active, setActive] = useState(null);
-  const [stats, setStats] = useState({
-    d: 0,
-    e: 0
-  });
-  const [loading, setLoading] = useState(true);
-  const prevCount = useRef(null);
-  const watchRef = useRef(null);
-  const loadAvail = useCallback(async () => {
-    if (!online) {
-      setAvailable([]);
-      return;
-    }
-    const {
-      data
-    } = await db.from('orders').select('*').eq('status', 'waiting').order('created_at');
-    const arr = data || [];
-    if (prevCount.current !== null && arr.length > prevCount.current) playAlert();
-    prevCount.current = arr.length;
-    setAvailable(arr);
-  }, [online]);
-  const loadActive = useCallback(async () => {
-    if (!profile) return;
-    const {
-      data
-    } = await db.from('orders').select('*').eq('courier_id', profile.id).in('status', ['accepted', 'collecting', 'delivering']).order('updated_at', {
-      ascending: false
-    }).limit(1);
-    setActive((data === null || data === void 0 ? void 0 : data[0]) || null);
-  }, [profile]);
-  const loadStats = useCallback(async () => {
-    if (!profile) return;
-    const {
-      data
-    } = await db.from('orders').select('courier_price,price').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', localDateStr() + 'T00:00:00');
-    const e = (data || []).reduce((a, o) => a + (o.courier_price ? +o.courier_price : +o.price * 0.8), 0);
-    setStats({
-      d: (data === null || data === void 0 ? void 0 : data.length) || 0,
-      e: Math.round(e)
-    });
-  }, [profile]);
-  const loadAll = useCallback(async () => {
-    await Promise.all([loadAvail(), loadActive(), loadStats()]);
-    setLoading(false);
-  }, [loadAvail, loadActive, loadStats]);
-
-  // GPS tracking
-  useEffect(() => {
-    if (!online || !profile) return;
-    if (navigator.geolocation) {
-      watchRef.current = navigator.geolocation.watchPosition(async pos => {
-        await db.from('users').update({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          location_updated_at: localTimestamp()
-        }).eq('id', profile.id);
-      }, e => console.warn('GPS:', e.message), {
-        enableHighAccuracy: true,
-        maximumAge: 10000,
-        timeout: 15000
-      });
-    }
-    return () => {
-      if (watchRef.current !== null) {
-        navigator.geolocation.clearWatch(watchRef.current);
-        watchRef.current = null;
-      }
-    };
-  }, [online, profile]);
-  useEffect(() => {
-    db.from('users').select('is_online').eq('id', profile === null || profile === void 0 ? void 0 : profile.id).single().then(({
-      data
-    }) => {
-      if (data) setOnline(data.is_online !== false);
-    });
-  }, [profile]);
-  useEffect(() => {
-    loadAll();
-  }, [loadAll]);
-  useEffect(() => {
-    if (!profile) return;
-    const sub = db.channel('cr').on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'orders'
-    }, loadAll).subscribe();
-    return () => db.removeChannel(sub);
-  }, [profile, loadAll]);
-  const processBonus = async order => {
-    if (!order.courier_id) return;
-    const week = getWeekBounds(0);
-    const ws = week.startStr,
-      we = week.endStr;
-    // Busca configuração do multinível do Supabase (ou usa padrão)
-    const ml = getSetting('multinivel', {
-      nivel1: 0.70,
-      nivel2_para_nivel1: 0.70,
-      nivel2_para_nivel0: 0.30,
-      total_pool: 1.00
-    });
-    const POOL = +ml.total_pool || 1.00;
-    const L1 = +ml.nivel1 || 0.70;
-    const L2_L1 = +ml.nivel2_para_nivel1 || 0.70;
-    const L2_L0 = +ml.nivel2_para_nivel0 || 0.30;
-    const {
-      data: courier
-    } = await db.from('users').select('id,name,referred_by').eq('id', order.courier_id).single();
-    let distribuido = 0;
-    // Nível 1 (quem indicou o entregador)
-    if (courier !== null && courier !== void 0 && courier.referred_by) {
-      const {
-        data: l1
-      } = await db.from('users').select('id,name,can_refer,referred_by').eq('id', courier.referred_by).single();
-      if (l1 !== null && l1 !== void 0 && l1.can_refer) {
-        await db.from('referral_bonuses').insert({
-          earner_id: l1.id,
-          earner_name: l1.name,
-          source_courier_id: courier.id,
-          source_courier_name: courier.name,
-          order_id: order.id,
-          level: 1,
-          amount: L1,
-          week_start: ws,
-          week_end: we
-        });
-        distribuido += L1;
-        // Nível 0 (quem indicou o nível 1)
-        if (l1.referred_by) {
-          const {
-            data: l0
-          } = await db.from('users').select('id,name,can_refer').eq('id', l1.referred_by).single();
-          if (l0 !== null && l0 !== void 0 && l0.can_refer) {
-            await db.from('referral_bonuses').insert({
-              earner_id: l0.id,
-              earner_name: l0.name,
-              source_courier_id: courier.id,
-              source_courier_name: courier.name,
-              order_id: order.id,
-              level: 0,
-              amount: L2_L0,
-              week_start: ws,
-              week_end: we
-            });
-            distribuido += L2_L0;
-          }
-        }
-      }
-    }
-    // O que sobrar do pool vai para a gestora
-    const gestora = Math.max(0, +(POOL - distribuido).toFixed(2));
-    if (gestora > 0) {
-      await db.from('orders').update({
-        gestora_amount: gestora
-      }).eq('id', order.id);
-    }
-  };
-  const accept = async id => {
-    const {
-      error
-    } = await db.from('orders').update({
-      courier_id: profile.id,
-      courier_name: profile.name,
-      courier_phone: profile.phone || null,
-      courier_number: profile.courier_number || null,
-      status: 'accepted',
-      updated_at: localTimestamp()
-    }).eq('id', id).eq('status', 'waiting');
-    if (error) {
-      toast('Pedido já aceito por outro');
-      return;
-    }
-    toast('Pedido aceito! 🛵');
-    loadAll();
-  };
-  const advance = async (id, next) => {
-    await db.from('orders').update({
-      status: next,
-      updated_at: localTimestamp()
-    }).eq('id', id);
-    if (next === 'done') {
-      toast('Entrega concluída! 🎉');
-      const {
-        data: o
-      } = await db.from('orders').select('*').eq('id', id).single();
-      if (o) await processBonus(o);
-    } else toast('Status atualizado ✓');
-    loadAll();
-  };
-  const toggleOnline = async () => {
-    const next = !online;
-    if (next && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(async pos => {
-        await db.from('users').update({
-          is_online: true,
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude
-        }).eq('id', profile.id);
-      }, () => db.from('users').update({
-        is_online: true
-      }).eq('id', profile.id));
-    } else await db.from('users').update({
-      is_online: next,
-      ...(next ? {} : {
-        lat: null,
-        lng: null
-      })
-    }).eq('id', profile.id);
-    setOnline(next);
-    if (!next) setAvailable([]);else loadAvail();
-  };
-  const nextA = {
-    accepted: {
-      l: 'Cheguei para coletar ✓',
-      n: 'collecting'
-    },
-    collecting: {
-      l: 'Coletei — iniciar entrega ✓',
-      n: 'delivering'
-    },
-    delivering: {
-      l: 'Entregue! ✓',
-      n: 'done'
-    }
-  };
-  const ActiveOrderCard = ({
-    o
-  }) => {
-    const [clientPhone, setClientPhone] = useState(null);
-    useEffect(() => {
-      if (o !== null && o !== void 0 && o.client_id) db.from('users').select('phone').eq('id', o.client_id).single().then(({
-        data
-      }) => setClientPhone(data === null || data === void 0 ? void 0 : data.phone));
-    }, [o === null || o === void 0 ? void 0 : o.client_id]);
-    return /*#__PURE__*/React.createElement("div", {
-      className: "ocard",
-      style: {
-        borderColor: 'var(--blue-m)',
-        margin: '8px 14px'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        marginBottom: 9
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700
-      }
-    }, o.id.slice(0, 8).toUpperCase()), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, "Pedido ativo")), /*#__PURE__*/React.createElement("span", {
-      className: `sbadge ${SC[o.status]}`
-    }, SL[o.status])), /*#__PURE__*/React.createElement("div", {
-      className: "addr-line"
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
-      className: "dot dg"
-    }), o.pickup_addr), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
-      className: "dot dr"
-    }), o.delivery_addr)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: 'var(--text2)',
-        marginTop: 5
-      }
-    }, "\uD83D\uDC64 ", o.client_name, " \xB7 \uD83D\uDCE6 ", o.item_desc), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        gap: 8,
-        marginTop: 10,
-        alignItems: 'center',
-        flexWrap: 'wrap'
-      }
-    }, clientPhone && /*#__PURE__*/React.createElement("a", {
-      href: `https://wa.me/55${clientPhone.replace(/\D/g, '')}`,
-      target: "_blank",
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 5,
-        padding: '7px 12px',
-        background: '#25D366',
-        color: 'white',
-        borderRadius: 'var(--rs)',
-        textDecoration: 'none',
-        fontSize: 12,
-        fontWeight: 600
-      }
-    }, "\uD83D\uDCAC Falar com cliente"), /*#__PURE__*/React.createElement("button", {
-      className: "btn-sm progress",
-      style: {
-        flex: 1
-      },
-      onClick: () => advance(o.id, nextA[o.status].n)
-    }, nextA[o.status].l)));
-  };
-  return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-      className: "rdot"
-    }), "Painel entregador"),
-    badge: profile === null || profile === void 0 ? void 0 : (_profile$name3 = profile.name) === null || _profile$name3 === void 0 ? void 0 : _profile$name3.split(' ')[0],
-    badgeClass: "bd"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "scroll"
-  }, (profile === null || profile === void 0 ? void 0 : profile.courier_number) && /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: '10px 14px 0',
-      padding: '8px 14px',
-      background: 'var(--blue-l)',
-      borderRadius: 'var(--rs)',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 24,
-      fontWeight: 800,
-      color: 'var(--blue)',
-      letterSpacing: 1
-    }
-  }, "#", profile.courier_number), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: 'var(--blue)'
-    }
-  }, "Seu n\xFAmero de identifica\xE7\xE3o")), /*#__PURE__*/React.createElement(Toggle, {
-    on: online,
-    onToggle: toggleOnline,
-    label: "Dispon\xEDvel para pedidos",
-    sublabel: online ? 'Você está online' : 'Você está offline'
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "mrow"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, stats.d), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "entregas hoje")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, "R$", stats.e), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "ganhos hoje")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, "\u2605 5.0"), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "avalia\xE7\xE3o"))), /*#__PURE__*/React.createElement("div", {
-    className: "divider"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "stitle"
-  }, "Pedido ativo"), active ? /*#__PURE__*/React.createElement(ActiveOrderCard, {
-    o: active
-  }) : /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: '8px 14px'
-    }
-  }, "Nenhum pedido ativo. Aceite um abaixo!"), /*#__PURE__*/React.createElement("div", {
-    className: "stitle",
-    style: {
-      paddingTop: 8
-    }
-  }, "Pedidos dispon\xEDveis"), loading ? /*#__PURE__*/React.createElement(Loading, null) : !online ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: '8px 14px'
-    }
-  }, "Fique online para ver pedidos.") : available.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
-    icon: "\uD83D\uDD0D",
-    text: "Nenhum pedido dispon\xEDvel agora."
-  }) : available.map(o => /*#__PURE__*/React.createElement(OrderCard, {
-    key: o.id,
-    order: o,
-    showCourierPrice: true,
-    actions: [/*#__PURE__*/React.createElement("button", {
-      key: "acc",
-      className: "btn-sm accept",
-      onClick: () => accept(o.id)
-    }, "Aceitar pedido")]
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "tabbar"
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "tab-item active"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\uD83D\uDEF5"), /*#__PURE__*/React.createElement("span", null, "Pedidos")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('courier-card')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\u2B50"), /*#__PURE__*/React.createElement("span", null, "Card")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('courier-shifts')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\uD83D\uDCC5"), /*#__PURE__*/React.createElement("span", null, "Turnos")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('courier-closing')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\u2705"), /*#__PURE__*/React.createElement("span", null, "Fechamento")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('courier-fin')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\uD83D\uDCB0"), /*#__PURE__*/React.createElement("span", null, "Financeiro")), /*#__PURE__*/React.createElement("button", {
-    className: "tab-item",
-    onClick: () => setPage('profile')
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tab-icon"
-  }, "\uD83D\uDC64"), /*#__PURE__*/React.createElement("span", null, "Perfil"))));
-}
-function CourierFin({
-  setPage
-}) {
-  const {
-    profile
-  } = useAuth();
-  const toast = useToast();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const loadData = useCallback(async () => {
-    if (!profile) return;
-    const wC = getWeekBounds(0),
-      wP = getWeekBounds(-1),
-      f = getWeekBounds(-3).start;
-    const [or, pa, me, ne, bo] = await Promise.all([db.from('orders').select('courier_price,price,created_at,neighborhood').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', getWeekBounds(-3).startStr).order('created_at', {
-      ascending: false
-    }), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', getWeekBounds(-3).startStr).order('created_at', {
-      ascending: false
-    }), db.from('users').select('can_refer,referral_code').eq('id', profile.id).single(), db.from('users').select('id,name,created_at').eq('referred_by', profile.id).eq('role', 'courier'), db.from('referral_bonuses').select('*').eq('earner_id', profile.id).order('created_at', {
-      ascending: false
-    }).limit(50)]);
-    const orders = or.data || [],
-      payments = pa.data || [],
-      myMe = me.data,
-      network = ne.data || [],
-      bonuses = bo.data || [];
-    const curr = orders.filter(o => {
-        var _o$created_at8, _o$created_at9;
-        return ((_o$created_at8 = o.created_at) === null || _o$created_at8 === void 0 ? void 0 : _o$created_at8.slice(0, 10)) >= wC.startStr && ((_o$created_at9 = o.created_at) === null || _o$created_at9 === void 0 ? void 0 : _o$created_at9.slice(0, 10)) <= wC.endStr;
-      }),
-      prev = orders.filter(o => {
-        var _o$created_at0, _o$created_at1;
-        return ((_o$created_at0 = o.created_at) === null || _o$created_at0 === void 0 ? void 0 : _o$created_at0.slice(0, 10)) >= wP.startStr && ((_o$created_at1 = o.created_at) === null || _o$created_at1 === void 0 ? void 0 : _o$created_at1.slice(0, 10)) <= wP.endStr;
-      });
-    const earn = a => a.reduce((s, o) => s + (o.courier_price ? +o.courier_price : +o.price * .8), 0);
-    setData({
-      wC,
-      wP,
-      curr,
-      prev,
-      currE: earn(curr),
-      prevE: earn(prev),
-      payments,
-      me: myMe,
-      network,
-      bonuses
-    });
-    setLoading(false);
-  }, [profile]);
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  // Realtime — atualiza ao concluir entregas
-  useEffect(() => {
-    if (!profile) return;
-    const sub = db.channel('fin-' + profile.id).on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'orders',
-      filter: `courier_id=eq.${profile.id}`
-    }, loadData).on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'referral_bonuses',
-      filter: `earner_id=eq.${profile.id}`
-    }, loadData).subscribe();
-    return () => db.removeChannel(sub);
-  }, [profile, loadData]);
-  const copy = link => {
-    navigator.clipboard.writeText(link).then(() => toast('Link copiado! ✓')).catch(() => toast('Copie: ' + link));
-  };
-  const share = link => {
-    if (navigator.share) navigator.share({
-      title: 'Entregou',
-      text: 'Cadastre-se como entregador:',
-      url: link
-    });else copy(link);
-  };
-  const [histTab, setHistTab] = useState('financial');
-  if (loading) return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Meu financeiro",
-    onBack: () => setPage('courier')
-  }), /*#__PURE__*/React.createElement(Loading, null));
-  const {
-    wC,
-    wP,
-    curr,
-    prev,
-    currE,
-    prevE,
-    payments,
-    me,
-    network,
-    bonuses
-  } = data;
-  const pPend = payments.find(p => p.status === 'pending' && p.week_start === wP.startStr);
-  const pPaid = payments.find(p => p.status === 'paid' && p.week_start === wP.startStr);
-  const pAll = payments.filter(p => p.status === 'paid');
-  const ubBonus = bonuses.filter(b => !b.paid).reduce((a, b) => a + +b.amount, 0);
-  const tBonus = bonuses.reduce((a, b) => a + +b.amount, 0);
-  const appUrl = window.location.origin + window.location.pathname;
-  const refLink = me !== null && me !== void 0 && me.referral_code ? appUrl + '?role=courier&ref=' + me.referral_code : null;
-  const tsH = t => ({
-    padding: '9px 14px',
-    fontSize: 13,
-    fontWeight: histTab === t ? 600 : 400,
-    cursor: 'pointer',
-    color: histTab === t ? 'var(--blue)' : 'var(--text2)',
-    borderBottom: histTab === t ? '2px solid var(--blue)' : '2px solid transparent',
-    background: 'none',
-    border: 'none',
-    borderBottom: histTab === t ? '2px solid var(--blue)' : '2px solid transparent',
-    fontFamily: 'var(--font)'
-  });
-  return /*#__PURE__*/React.createElement("div", {
-    className: "screen"
-  }, /*#__PURE__*/React.createElement(Topbar, {
-    title: "Financeiro & Hist\xF3rico",
-    onBack: () => setPage('courier'),
-    badge: "Entregador",
-    badgeClass: "bd"
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "scroll"
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    style: tsH('financial'),
-    onClick: () => setHistTab('financial')
-  }, "\uD83D\uDCB0 Financeiro"), /*#__PURE__*/React.createElement("button", {
-    style: tsH('history'),
-    onClick: () => setHistTab('history')
-  }, "\uD83D\uDCCB Hist\xF3rico")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: histTab === 'financial' ? 'block' : 'none'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '14px 14px 0'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "stitle",
-    style: {
-      padding: '0 0 10px'
-    }
-  }, "Semana atual"), /*#__PURE__*/React.createElement("div", {
-    className: "kgrid"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
-    style: {
-      color: 'var(--green)'
-    }
-  }, fmtMoney(currE)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(currEarnings)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "a receber")), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, curr.length), /*#__PURE__*/React.createElement("div", {
+  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), /*#__PURE__*/React.createElement("div", {
-    className: "stitle",
     style: {
-      padding: '0 0 4px'
-    }
-  }, "Semana anterior"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: 'var(--text2)',
-      marginBottom: 10
-    }
-  }, fmtDate(wP.start), " a ", fmtDate(wP.end)), /*#__PURE__*/React.createElement("div", {
-    className: "ocard",
-    style: {
-      margin: '0 0 14px'
+      marginBottom: 14
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: 10
+      height: 5,
+      background: 'var(--bg2)',
+      borderRadius: 3,
+      overflow: 'hidden',
+      marginBottom: 4
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600
-    }
-  }, prev.length, " entregas realizadas"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)'
-    }
-  }, "Repasse via Pix semanal")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 18,
-      fontWeight: 700,
-      color: 'var(--green)'
-    }
-  }, fmtMoney(prevE))), pPend ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: 0
-    }
-  }, "\u23F3 Repasse pendente \u2014 aguardando Pix") : pPaid ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ns",
-    style: {
-      margin: 0
-    }
-  }, "\u2713 Pix recebido em ", fmtDate(pPaid.paid_at)) : /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: 0
-    }
-  }, "Repasse ainda n\xE3o gerado pelo admin.")), pAll.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, pAll.map(p => /*#__PURE__*/React.createElement("div", {
-    key: p.id,
+  }, (() => {
+    const today = parseDate(localDateStr() + 'T12:00:00');
+    const start = parseDate(wC.startStr + 'T12:00:00');
+    const end = parseDate(wC.endStr + 'T12:00:00');
+    const pct = Math.min(100, Math.max(0, Math.round((today - start) / (end - start) * 100)));
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        height: '100%',
+        width: pct + '%',
+        background: 'var(--blue)',
+        borderRadius: 3
+      }
+    });
+  })()), /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
       justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '9px 0',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600
-    }
-  }, "Pix recebido"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
+      fontSize: 10,
       color: 'var(--text2)'
     }
-  }, fmtDate(p.week_start), " a ", fmtDate(p.week_end), " \xB7 ", fmtDate(p.paid_at))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Seg ", fmtDate(wC.startStr)), /*#__PURE__*/React.createElement("span", null, "Dom ", fmtDate(wC.endStr)))), currOrders.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "stitle",
     style: {
-      fontSize: 14,
-      fontWeight: 700,
-      color: 'var(--green)'
+      padding: '0 0 6px'
     }
-  }, fmtMoney(p.amount))))), curr.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, curr.map((o, i) => /*#__PURE__*/React.createElement("div", {
+  }, "Entregas desta semana"), currOrders.map((o, i) => /*#__PURE__*/React.createElement("div", {
     key: i,
     style: {
       display: 'flex',
-      justifyContent: 'space-between',
       alignItems: 'center',
-      padding: '9px 0',
+      gap: 10,
+      padding: '8px 0',
       borderBottom: '1px solid var(--border)'
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
-      fontWeight: 600
+      fontWeight: 500
     }
   }, o.neighborhood || 'Entrega'), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: 'var(--text2)'
     }
-  }, ago(o.created_at))), /*#__PURE__*/React.createElement("div", {
+  }, fmtDate(o.created_at))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
-      color: 'var(--green)',
-      marginLeft: 12
-    }
-  }, fmtMoney(o.courier_price || o.price * .8))))), /*#__PURE__*/React.createElement("div", {
-    className: "stitle",
-    style: {
-      padding: '14px 0 10px'
-    }
-  }, "Programa de indica\xE7\xE3o"), !(me !== null && me !== void 0 && me.can_refer) ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: '0 0 14px'
-    }
-  }, "Voc\xEA ainda n\xE3o tem permiss\xE3o para indicar. Fale com o admin.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "kgrid"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, network.length), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "indicados")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
-    style: {
       color: 'var(--green)'
     }
-  }, fmtMoney(tBonus)), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "total ganho")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard",
+  }, fmtMoney(o.courier_price))))), /*#__PURE__*/React.createElement("div", {
     style: {
-      gridColumn: 'span 2'
+      margin: '16px 0 0',
+      padding: '12px 14px',
+      background: 'var(--bg2)',
+      borderRadius: 'var(--rs)'
     }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
     style: {
-      color: 'var(--amber)'
+      display: 'flex',
+      justifyContent: 'space-between',
+      marginBottom: 8
     }
-  }, fmtMoney(ubBonus)), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "b\xF4nus a receber"))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, "Semana anterior"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, fmtDate(wP.startStr), " a ", fmtDate(wP.endStr))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: 'var(--green)'
+    }
+  }, fmtMoney(prevEarnings))), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--green)',
+      fontWeight: 600
+    }
+  }, "\u2713 Pix recebido em ", fmtDate(prevPayment.paid_at)) : (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'pending' ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--amber)',
+      fontWeight: 600
+    }
+  }, "\u23F3 Repasse pendente \u2014 aguardando Pix") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--text2)'
+    }
+  }, "Repasse ainda n\xE3o gerado pelo admin."))), tab === 'closings' && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '10px 14px 0'
+    }
+  }, days.map(day => {
+    const dt = parseDate(day.date + 'T12:00:00');
+    const dayLabel = DAYS_PT[dt.getDay()] + ' ' + fmtDate(day.date);
+    const hasClosing = day.closings.length > 0;
+    const confirmed = day.closings.filter(cl => cl.status === 'matched' || cl.status === 'agreed');
+    const pending = day.closings.filter(cl => cl.status === 'pending');
+    const isLaunching = launchDay === day.date;
+    const totalEntregas = day.closings.reduce((a, cl) => {
+      const sub = cl.courier_submission || [];
+      return a + sub.reduce((b, s) => b + s.qty, 0);
+    }, 0);
+    return /*#__PURE__*/React.createElement("div", {
+      key: day.date,
+      style: {
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--r)',
+        marginBottom: 8,
+        overflow: 'hidden',
+        opacity: day.isFuture ? 0.5 : 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '10px 12px',
+        background: day.isToday ? 'var(--blue-l)' : 'transparent'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        color: day.isToday ? 'var(--blue)' : 'var(--text)'
+      }
+    }, dayLabel, day.isToday ? ' — Hoje' : ''), totalEntregas > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text2)'
+      }
+    }, totalEntregas, " entrega", totalEntregas !== 1 ? 's' : '')), !day.isFuture && /*#__PURE__*/React.createElement(React.Fragment, null, confirmed.length > 0 && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        padding: '2px 8px',
+        borderRadius: 20,
+        background: 'var(--green-l)',
+        color: 'var(--green)',
+        fontWeight: 600
+      }
+    }, "\u2705 Confirmado"), pending.length > 0 && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        padding: '2px 8px',
+        borderRadius: 20,
+        background: 'var(--amber-l)',
+        color: 'var(--amber)',
+        fontWeight: 600
+      }
+    }, "\u23F3 Aguardando"), !hasClosing && !day.isFuture && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        padding: '2px 8px',
+        borderRadius: 20,
+        background: 'var(--blue-l)',
+        color: 'var(--blue)',
+        fontWeight: 600
+      }
+    }, "Lan\xE7ar"))), hasClosing && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: '8px 12px',
+        borderTop: '1px solid var(--border)',
+        background: 'var(--bg2)'
+      }
+    }, day.closings.map(cl => {
+      const si = statusInfo[cl.status] || {
+        icon: '?',
+        label: cl.status,
+        color: 'var(--text2)',
+        bg: 'var(--bg2)'
+      };
+      const sub = cl.courier_submission || [];
+      const total = sub.reduce((a, s) => a + s.qty, 0);
+      return /*#__PURE__*/React.createElement("div", {
+        key: cl.id,
+        style: {
+          marginBottom: 6
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 12,
+          fontWeight: 600,
+          color: 'var(--text2)',
+          marginBottom: 4
+        }
+      }, cl.client_name), sub.map((s, i) => /*#__PURE__*/React.createElement("div", {
+        key: i,
+        style: {
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 12,
+          color: 'var(--text2)',
+          padding: '2px 0'
+        }
+      }, /*#__PURE__*/React.createElement("span", null, s.label), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontWeight: 600,
+          color: 'var(--text)'
+        }
+      }, s.qty, "x"))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 12,
+          fontWeight: 600,
+          borderTop: '1px solid var(--border)',
+          paddingTop: 4,
+          marginTop: 4
+        }
+      }, /*#__PURE__*/React.createElement("span", null, "Total"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: si.color
+        }
+      }, si.icon, " ", total, " entregas \u2014 ", si.label)));
+    })), !day.isFuture && !hasClosing && isLaunching && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: '10px 12px',
+        borderTop: '1px solid var(--border)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 8
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      className: "flabel"
+    }, "Cliente"), /*#__PURE__*/React.createElement("select", {
+      value: selClient,
+      onChange: e => onSelectClient(e.target.value)
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014 Selecione \u2014"), clients.map(x => /*#__PURE__*/React.createElement("option", {
+      key: x.id,
+      value: x.id
+    }, x.name)))), priceItems.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 8
+      }
+    }, priceItems.map(item => {
+      const key = item.neighborhood_key || item.key;
+      const qty = quantities[key] || 0;
+      return /*#__PURE__*/React.createElement("div", {
+        key: key,
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '6px 0',
+          borderBottom: '1px solid var(--border)'
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          flex: 1,
+          fontSize: 12
+        }
+      }, item.neighborhood_label || item.label), /*#__PURE__*/React.createElement("button", {
+        onClick: () => setQuantities(q => ({
+          ...q,
+          [key]: Math.max(0, (q[key] || 0) - 1)
+        })),
+        style: {
+          width: 24,
+          height: 24,
+          borderRadius: '50%',
+          border: '1px solid var(--border)',
+          background: 'var(--bg2)',
+          cursor: 'pointer',
+          fontSize: 14,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }
+      }, "\u2212"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          width: 28,
+          textAlign: 'center',
+          fontSize: 14,
+          fontWeight: 700
+        }
+      }, qty || 0), /*#__PURE__*/React.createElement("button", {
+        onClick: () => setQuantities(q => ({
+          ...q,
+          [key]: (q[key] || 0) + 1
+        })),
+        style: {
+          width: 24,
+          height: 24,
+          borderRadius: '50%',
+          border: '1px solid var(--blue-l)',
+          background: 'var(--blue-l)',
+          cursor: 'pointer',
+          fontSize: 14,
+          color: 'var(--blue)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }
+      }, "+"));
+    })), /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-blue",
+      style: {
+        padding: '8px'
+      },
+      onClick: submitClosing,
+      disabled: submitting
+    }, submitting ? 'Enviando...' : 'Enviar para cliente confirmar')), /*#__PURE__*/React.createElement("button", {
+      onClick: () => setLaunchDay(null),
+      style: {
+        marginTop: 6,
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        fontSize: 12,
+        color: 'var(--text2)',
+        width: '100%',
+        textAlign: 'center'
+      }
+    }, "Cancelar")), !day.isFuture && !hasClosing && !isLaunching && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: '8px 12px',
+        borderTop: '1px solid var(--border)'
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      className: "btn-sm accept",
+      style: {
+        width: '100%',
+        padding: '8px'
+      },
+      onClick: () => {
+        setLaunchDay(day.date);
+        setDate(day.date);
+      }
+    }, "+ Lan\xE7ar entregas de ", day.isToday ? 'hoje' : fmtDate(day.date))));
+  })), tab === 'referral' && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '14px 14px 0'
+    }
+  }, !(me !== null && me !== void 0 && me.can_refer) ? /*#__PURE__*/React.createElement("div", {
+    className: "notice ni"
+  }, "Voc\xEA ainda n\xE3o tem permiss\xE3o para indicar. Fale com o admin.") : /*#__PURE__*/React.createElement(React.Fragment, null, refLink && /*#__PURE__*/React.createElement("div", {
     style: {
       background: 'var(--bg2)',
       borderRadius: 'var(--r)',
@@ -4888,80 +2936,8 @@ function CourierFin({
       marginTop: 8,
       lineHeight: 1.6
     }
-  }, "Ganhe ", /*#__PURE__*/React.createElement("strong", null, "R$ 0,70"), " por entrega de quem voc\xEA indicar (n\xEDvel 1)", /*#__PURE__*/React.createElement("br", null), "Ganhe ", /*#__PURE__*/React.createElement("strong", null, "R$ 0,30"), " por entrega de quem seu indicado indicar (n\xEDvel 2)")), bonuses.slice(0, 10).map(b => /*#__PURE__*/React.createElement("div", {
-    key: b.id,
-    style: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '8px 0',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 600
-    }
-  }, "Entrega de ", b.source_courier_name), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)'
-    }
-  }, "N\xEDvel ", b.level, " \xB7 ", fmtDate(b.created_at), " \xB7 ", b.paid ? '✓ Pago' : 'Pendente')), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: 'var(--green)'
-    }
-  }, fmtMoney(b.amount))))))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: histTab === 'history' ? 'block' : 'none',
-      padding: '0 14px 16px'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '14px 0 10px',
-      fontSize: 13,
-      color: 'var(--text2)'
-    }
-  }, "Suas entregas recentes com bairro e valor recebido."), curr.length === 0 && prev.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
-    icon: "\uD83D\uDCE6",
-    text: "Nenhuma entrega registrada ainda."
-  }) : [...curr, ...prev].map((o, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      padding: '10px 0',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 500
-    }
-  }, o.neighborhood || 'Entrega'), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)'
-    }
-  }, fmtDate(o.created_at))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 14,
-      fontWeight: 700,
-      color: 'var(--green)'
-    }
-  }, fmtMoney(o.courier_price || o.price * .8)))))));
+  }, "Ganhe ", /*#__PURE__*/React.createElement("strong", null, "R$ 0,70"), " por entrega de quem voc\xEA indicar (n\xEDvel 1)", /*#__PURE__*/React.createElement("br", null), "Ganhe ", /*#__PURE__*/React.createElement("strong", null, "R$ 0,30"), " por entrega de quem seu indicado indicar (n\xEDvel 2)"))))));
 }
-
-// ===== ADMIN PAGES =====
-
-// ===== ADMIN SETTINGS =====
 function AdminSettings({
   setPage
 }) {
@@ -5000,10 +2976,10 @@ function AdminSettings({
     });
     // Carrega bairros padrão do hardcode
     const defaultBairros = Object.entries(BAIRRO_PRECO).map(([key, v]) => {
-      var _BAIRROS$find4;
+      var _BAIRROS$find3;
       return {
         key,
-        label: ((_BAIRROS$find4 = BAIRROS.find(([k]) => k === key)) === null || _BAIRROS$find4 === void 0 ? void 0 : _BAIRROS$find4[1]) || key,
+        label: ((_BAIRROS$find3 = BAIRROS.find(([k]) => k === key)) === null || _BAIRROS$find3 === void 0 ? void 0 : _BAIRROS$find3[1]) || key,
         cliente: v.cliente,
         entregador: v.entregador
       };
@@ -6864,6 +4840,11 @@ function AdminShell({
   }, /*#__PURE__*/React.createElement("span", {
     className: "tab-icon"
   }, "\uD83D\uDDFA\uFE0F"), /*#__PURE__*/React.createElement("span", null, "Mapa")), /*#__PURE__*/React.createElement("button", {
+    className: `tab-item ${page === 'admin-relatorio' ? 'active' : ''}`,
+    onClick: () => setPage('admin-relatorio')
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "tab-icon"
+  }, "\uD83D\uDCCA"), /*#__PURE__*/React.createElement("span", null, "Relat\xF3rio")), /*#__PURE__*/React.createElement("button", {
     className: `tab-item ${page === 'admin-fin' ? 'active' : ''}`,
     onClick: () => setPage('admin-fin')
   }, /*#__PURE__*/React.createElement("span", {
@@ -9227,7 +7208,7 @@ function AdminOrders({
 function AdminNewOrder({
   setPage
 }) {
-  var _BAIRROS$find5;
+  var _BAIRROS$find4;
   const {
     profile
   } = useAuth();
@@ -9270,7 +7251,7 @@ function AdminNewOrder({
     const items = await getPriceTableForClient(id);
     setPriceItems(items);
   };
-  const bairroLabel = bairro ? ((_BAIRROS$find5 = BAIRROS.find(([v]) => v === bairro)) === null || _BAIRROS$find5 === void 0 ? void 0 : _BAIRROS$find5[1]) || bairro : '';
+  const bairroLabel = bairro ? ((_BAIRROS$find4 = BAIRROS.find(([v]) => v === bairro)) === null || _BAIRROS$find4 === void 0 ? void 0 : _BAIRROS$find4[1]) || bairro : '';
   const bairroPrice = priceItems.find(p => (p.neighborhood_key || p.key) === bairro);
   const prices = bairroPrice ? {
     cliente: +(bairroPrice.client_price || bairroPrice.cliente),
@@ -9566,6 +7547,701 @@ function AdminAlloc({
       color: 'var(--text2)'
     }
   }, "Todos est\xE3o online.") : offline.map(rc)));
+}
+
+// ===== ADMIN RELATORIO =====
+function AdminRelatorio({
+  setPage
+}) {
+  const toast = useToast();
+  const [orders, setOrders] = useState([]);
+  const [networks, setNetworks] = useState([]);
+  const [couriers, setCouriers] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState('week');
+  const [customFrom, setCustomFrom] = useState(localDateStr());
+  const [customTo, setCustomTo] = useState(localDateStr());
+  const [filterCourier, setFilterCourier] = useState('');
+  const [filterClient, setFilterClient] = useState('');
+  const [filterNetwork, setFilterNetwork] = useState('');
+  const [groupBy, setGroupBy] = useState('none');
+  const [tab, setTab] = useState('list'); // list | courier | client | region
+
+  const getPeriodRange = () => {
+    if (period === 'today') return {
+      from: localDateStr(),
+      to: localDateStr()
+    };
+    if (period === 'week') return {
+      from: getWeekBounds(0).startStr,
+      to: getWeekBounds(0).endStr
+    };
+    if (period === 'prev') return {
+      from: getWeekBounds(-1).startStr,
+      to: getWeekBounds(-1).endStr
+    };
+    if (period === 'month') {
+      const d = new Date();
+      return {
+        from: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01',
+        to: localDateStr()
+      };
+    }
+    if (period === 'custom') return {
+      from: customFrom,
+      to: customTo
+    };
+    return {
+      from: getWeekBounds(0).startStr,
+      to: getWeekBounds(0).endStr
+    };
+  };
+  const load = useCallback(async () => {
+    setLoading(true);
+    const {
+      from,
+      to
+    } = getPeriodRange();
+    const [ordRes, netRes, couRes, cliRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
+      ascending: false
+    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client')]);
+    setOrders(ordRes.data || []);
+    setNetworks(netRes.data || []);
+    setCouriers(couRes.data || []);
+    setClients(cliRes.data || []);
+    setLoading(false);
+  }, [period, customFrom, customTo]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Realtime
+  useEffect(() => {
+    const sub = db.channel('admin-rel').on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'orders'
+    }, load).subscribe();
+    return () => db.removeChannel(sub);
+  }, [load]);
+
+  // Get network of a courier from referral chain
+  const getCourierNetwork = courierId => {
+    var _networks$find3;
+    const courier = couriers.find(c => c.id === courierId);
+    if (!courier) return null;
+    // Walk up to root
+    let current = courier;
+    let steps = 0;
+    while (current.referred_by && steps < 5) {
+      const parent = couriers.find(c => c.id === current.referred_by);
+      if (!parent) break;
+      current = parent;
+      steps++;
+    }
+    // current is now root — find their network
+    if (current.network_id) return ((_networks$find3 = networks.find(n => n.id === current.network_id)) === null || _networks$find3 === void 0 ? void 0 : _networks$find3.name) || null;
+    return null;
+  };
+  const isManual = o => {
+    var _o$item_desc, _o$item_desc2, _o$item_desc3;
+    return ((_o$item_desc = o.item_desc) === null || _o$item_desc === void 0 ? void 0 : _o$item_desc.includes('Fechamento diário')) || ((_o$item_desc2 = o.item_desc) === null || _o$item_desc2 === void 0 ? void 0 : _o$item_desc2.includes('Entrega manual')) || ((_o$item_desc3 = o.item_desc) === null || _o$item_desc3 === void 0 ? void 0 : _o$item_desc3.includes('manual'));
+  };
+
+  // Apply filters
+  const filtered = orders.filter(o => {
+    if (filterCourier && o.courier_id !== filterCourier) return false;
+    if (filterClient && o.client_id !== filterClient) return false;
+    if (filterNetwork) {
+      const net = getCourierNetwork(o.courier_id);
+      if (net !== filterNetwork) return false;
+    }
+    return true;
+  });
+
+  // Totals
+  const totalClient = filtered.reduce((a, o) => a + (+o.price || 0), 0);
+  const totalCourier = filtered.reduce((a, o) => a + (+o.courier_price || 0), 0);
+  const totalGestora = filtered.reduce((a, o) => a + (+o.gestora_amount || 0), 0);
+  const totalApp = filtered.filter(o => !isManual(o)).length;
+  const totalManual = filtered.filter(o => isManual(o)).length;
+
+  // Group by courier
+  const byCourier = {};
+  filtered.forEach(o => {
+    const k = o.courier_id || 'sem';
+    if (!byCourier[k]) byCourier[k] = {
+      id: o.courier_id,
+      name: o.courier_name,
+      number: o.courier_number,
+      count: 0,
+      client: 0,
+      courier: 0,
+      gestora: 0,
+      network: getCourierNetwork(o.courier_id)
+    };
+    byCourier[k].count++;
+    byCourier[k].client += +o.price || 0;
+    byCourier[k].courier += +o.courier_price || 0;
+    byCourier[k].gestora += +o.gestora_amount || 0;
+  });
+
+  // Group by client
+  const byClient = {};
+  filtered.forEach(o => {
+    const k = o.client_id || 'sem';
+    if (!byClient[k]) byClient[k] = {
+      id: o.client_id,
+      name: o.client_name,
+      count: 0,
+      client: 0,
+      courier: 0,
+      gestora: 0
+    };
+    byClient[k].count++;
+    byClient[k].client += +o.price || 0;
+    byClient[k].courier += +o.courier_price || 0;
+    byClient[k].gestora += +o.gestora_amount || 0;
+  });
+
+  // Group by region
+  const byRegion = {};
+  filtered.forEach(o => {
+    const k = o.neighborhood || 'Sem bairro';
+    if (!byRegion[k]) byRegion[k] = {
+      name: k,
+      count: 0,
+      client: 0,
+      courier: 0,
+      gestora: 0
+    };
+    byRegion[k].count++;
+    byRegion[k].client += +o.price || 0;
+    byRegion[k].courier += +o.courier_price || 0;
+    byRegion[k].gestora += +o.gestora_amount || 0;
+  });
+
+  // Export to CSV
+  const exportCSV = () => {
+    const rows = [['Data', 'Cliente', 'Entregador', 'Nº', 'Rede', 'Bairro', 'Tipo', 'Valor Cliente', 'Valor Entregador', 'Gestora'], ...filtered.map(o => [fmtDate(o.created_at), o.client_name || '', o.courier_name || '', o.courier_number || '', getCourierNetwork(o.courier_id) || '', o.neighborhood || '', isManual(o) ? 'Manual' : 'App', (+o.price || 0).toFixed(2).replace('.', ','), (+o.courier_price || 0).toFixed(2).replace('.', ','), (+o.gestora_amount || 0).toFixed(2).replace('.', ',')])];
+    const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(';')).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], {
+      type: 'text/csv;charset=utf-8'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'entregas_' + localDateStr() + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('CSV exportado ✓');
+  };
+  const {
+    from,
+    to
+  } = getPeriodRange();
+  const periodLabel = {
+    today: 'Hoje',
+    week: 'Esta semana',
+    prev: 'Semana anterior',
+    month: 'Este mês',
+    custom: 'Personalizado'
+  };
+  const ts = t => ({
+    padding: '8px 12px',
+    fontSize: 12,
+    fontWeight: tab === t ? 600 : 400,
+    cursor: 'pointer',
+    color: tab === t ? 'var(--blue)' : 'var(--text2)',
+    borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
+    background: 'none',
+    border: 'none',
+    borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
+    fontFamily: 'var(--font)',
+    whiteSpace: 'nowrap'
+  });
+  return /*#__PURE__*/React.createElement(AdminShell, {
+    page: "admin-relatorio",
+    setPage: setPage
+  }, /*#__PURE__*/React.createElement(Topbar, {
+    title: "Relat\xF3rio de entregas",
+    badge: "Admin",
+    badgeClass: "ba"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn-sm accept",
+    onClick: exportCSV,
+    style: {
+      marginLeft: 'auto',
+      fontSize: 11
+    }
+  }, "\u2B07 CSV")), /*#__PURE__*/React.createElement("div", {
+    className: "scroll"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '10px 14px 6px',
+      display: 'flex',
+      gap: 5,
+      flexWrap: 'wrap'
+    }
+  }, [['today', 'Hoje'], ['week', 'Semana'], ['prev', 'Anterior'], ['month', 'Mês'], ['custom', 'Custom']].map(([v, l]) => /*#__PURE__*/React.createElement("button", {
+    key: v,
+    onClick: () => setPeriod(v),
+    style: {
+      padding: '6px 12px',
+      borderRadius: 20,
+      border: '1px solid var(--border)',
+      background: period === v ? 'var(--blue)' : 'var(--bg)',
+      color: period === v ? 'white' : 'var(--text2)',
+      fontSize: 12,
+      fontWeight: period === v ? 600 : 400,
+      cursor: 'pointer',
+      fontFamily: 'var(--font)'
+    }
+  }, l))), period === 'custom' && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      padding: '4px 14px 8px'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "flabel"
+  }, "De"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: customFrom,
+    onChange: e => setCustomFrom(e.target.value)
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "flabel"
+  }, "At\xE9"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: customTo,
+    onChange: e => setCustomTo(e.target.value)
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '0 14px 8px',
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap'
+    }
+  }, /*#__PURE__*/React.createElement("select", {
+    value: filterCourier,
+    onChange: e => setFilterCourier(e.target.value),
+    style: {
+      flex: 1,
+      fontSize: 12,
+      padding: '6px 8px',
+      minWidth: 120
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Todos entregadores"), couriers.map(c => /*#__PURE__*/React.createElement("option", {
+    key: c.id,
+    value: c.id
+  }, c.courier_number ? '#' + c.courier_number + ' ' : '', c.name))), /*#__PURE__*/React.createElement("select", {
+    value: filterClient,
+    onChange: e => setFilterClient(e.target.value),
+    style: {
+      flex: 1,
+      fontSize: 12,
+      padding: '6px 8px',
+      minWidth: 100
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Todos clientes"), clients.map(c => /*#__PURE__*/React.createElement("option", {
+    key: c.id,
+    value: c.id
+  }, c.name))), /*#__PURE__*/React.createElement("select", {
+    value: filterNetwork,
+    onChange: e => setFilterNetwork(e.target.value),
+    style: {
+      flex: 1,
+      fontSize: 12,
+      padding: '6px 8px',
+      minWidth: 100
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Todas redes"), networks.map(n => /*#__PURE__*/React.createElement("option", {
+    key: n.id,
+    value: n.name
+  }, n.name)))), loading ? /*#__PURE__*/React.createElement(Loading, null) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(3,1fr)',
+      gap: 6,
+      padding: '0 14px 10px'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      fontSize: 16,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(totalClient)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "receita")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      fontSize: 16,
+      color: 'var(--green)'
+    }
+  }, fmtMoney(totalCourier)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "entregadores")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      fontSize: 16,
+      color: 'var(--amber)'
+    }
+  }, fmtMoney(totalGestora)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "gestora"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      padding: '0 14px 10px'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mcard",
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      fontSize: 16
+    }
+  }, filtered.length), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "total entregas")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard",
+    style: {
+      flex: 1,
+      background: 'var(--blue-l)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      fontSize: 16,
+      color: 'var(--blue)'
+    }
+  }, totalApp), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "via app")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard",
+    style: {
+      flex: 1,
+      background: 'var(--amber-l)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      fontSize: 16,
+      color: 'var(--amber)'
+    }
+  }, totalManual), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "manuais"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      borderBottom: '1px solid var(--border)',
+      overflowX: 'auto'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    style: ts('list'),
+    onClick: () => setTab('list')
+  }, "\uD83D\uDCCB Lista"), /*#__PURE__*/React.createElement("button", {
+    style: ts('courier'),
+    onClick: () => setTab('courier')
+  }, "\uD83D\uDEF5 Entregador"), /*#__PURE__*/React.createElement("button", {
+    style: ts('client'),
+    onClick: () => setTab('client')
+  }, "\uD83C\uDFEA Cliente"), /*#__PURE__*/React.createElement("button", {
+    style: ts('region'),
+    onClick: () => setTab('region')
+  }, "\uD83D\uDCCD Bairro")), tab === 'list' && /*#__PURE__*/React.createElement(React.Fragment, null, filtered.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
+    icon: "\uD83D\uDCE6",
+    text: "Nenhuma entrega no per\xEDodo."
+  }) : filtered.map(o => /*#__PURE__*/React.createElement("div", {
+    key: o.id,
+    style: {
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: 10,
+      padding: '10px 14px',
+      borderBottom: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 5,
+      flexWrap: 'wrap',
+      marginBottom: 3
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      padding: '1px 7px',
+      borderRadius: 10,
+      fontWeight: 600,
+      background: isManual(o) ? 'var(--amber-l)' : 'var(--blue-l)',
+      color: isManual(o) ? 'var(--amber)' : 'var(--blue)'
+    }
+  }, isManual(o) ? 'Manual' : 'App'), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, o.neighborhood || '—'), getCourierNetwork(o.courier_id) && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      padding: '1px 6px',
+      borderRadius: 10,
+      background: 'var(--green-l)',
+      color: 'var(--green)',
+      fontWeight: 600
+    }
+  }, getCourierNetwork(o.courier_id))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, fmtDate(o.created_at), " \xB7 \uD83C\uDFEA ", o.client_name || '—', " \xB7 \uD83D\uDEF5 ", o.courier_name || '—', o.courier_number ? ' #' + o.courier_number : '')), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'right',
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(o.price)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--green)'
+    }
+  }, fmtMoney(o.courier_price)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--amber)'
+    }
+  }, fmtMoney(o.gestora_amount)))))), tab === 'courier' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byCourier).sort((a, b) => b.count - a.count).map(co => {
+    var _co$name;
+    return /*#__PURE__*/React.createElement("div", {
+      key: co.id,
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 14px',
+        borderBottom: '1px solid var(--border)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 34,
+        height: 34,
+        borderRadius: '50%',
+        background: 'var(--green-l)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 12,
+        fontWeight: 700,
+        color: 'var(--green)',
+        flexShrink: 0
+      }
+    }, co.number ? '#' + co.number : (_co$name = co.name) === null || _co$name === void 0 ? void 0 : _co$name.split(' ').map(n => n[0]).join('').slice(0, 2)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600
+      }
+    }, co.name || 'Sem entregador'), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text2)'
+      }
+    }, co.count, " entregas", co.network ? ' · ' + co.network : '')), /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: 'right'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: 'var(--blue)'
+      }
+    }, fmtMoney(co.client)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--green)'
+      }
+    }, fmtMoney(co.courier)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--amber)'
+      }
+    }, fmtMoney(co.gestora))));
+  })), tab === 'client' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byClient).sort((a, b) => b.count - a.count).map(cl => /*#__PURE__*/React.createElement("div", {
+    key: cl.id,
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '10px 14px',
+      borderBottom: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 34,
+      height: 34,
+      borderRadius: '50%',
+      background: 'var(--blue-l)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: 16,
+      flexShrink: 0
+    }
+  }, "\uD83C\uDFEA"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, cl.name || 'Sem cliente'), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, cl.count, " entregas")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'right'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(cl.client)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--green)'
+    }
+  }, fmtMoney(cl.courier)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--amber)'
+    }
+  }, fmtMoney(cl.gestora)))))), tab === 'region' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byRegion).sort((a, b) => b.count - a.count).map(r => /*#__PURE__*/React.createElement("div", {
+    key: r.name,
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '10px 14px',
+      borderBottom: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 34,
+      height: 34,
+      borderRadius: '50%',
+      background: 'var(--purple-l)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: 16,
+      flexShrink: 0
+    }
+  }, "\uD83D\uDCCD"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, r.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, r.count, " entregas")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'right'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(r.client)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--green)'
+    }
+  }, fmtMoney(r.courier)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--amber)'
+    }
+  }, fmtMoney(r.gestora)))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '10px 14px',
+      display: 'flex',
+      gap: 12,
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--blue)',
+      fontWeight: 600
+    }
+  }, "Azul = cliente paga"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--green)',
+      fontWeight: 600
+    }
+  }, "Verde = entregador recebe"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--amber)',
+      fontWeight: 600
+    }
+  }, "\xC2mbar = gestora")))));
 }
 function AdminFin({
   setPage
@@ -10073,7 +8749,7 @@ function App() {
     const saved = localStorage.getItem('entregou_page');
     const adminPages = ['admin', 'admin-orders', 'admin-new', 'admin-manual', 'admin-new-client', 'admin-couriers', 'admin-shifts', 'admin-map', 'admin-fin', 'admin-settings'];
     const clientPages = ['new-order', 'client-orders', 'client-closing', 'client-fin', 'track'];
-    const courierPages = ['courier', 'courier-card', 'courier-shifts', 'courier-closing', 'courier-fin'];
+    const courierPages = ['courier', 'courier-card', 'courier-shifts', 'courier-fin'];
     const validForRole = (role, pg) => {
       if (role === 'admin') return adminPages.includes(pg);
       if (role === 'client') return clientPages.includes(pg);
@@ -10177,10 +8853,7 @@ function App() {
         return /*#__PURE__*/React.createElement(CourierShifts, {
           setPage: setPage
         });
-      case 'courier-closing':
-        return /*#__PURE__*/React.createElement(CourierClosing, {
-          setPage: setPage
-        });
+      // courier-closing merged into courier-fin
       case 'admin-map':
         return /*#__PURE__*/React.createElement(AdminMap, {
           setPage: setPage
@@ -10201,6 +8874,10 @@ function App() {
       case 'admin-alloc':
         return /*#__PURE__*/React.createElement(AdminAlloc, {
           orderId: allocId,
+          setPage: setPage
+        });
+      case 'admin-relatorio':
+        return /*#__PURE__*/React.createElement(AdminRelatorio, {
           setPage: setPage
         });
       case 'admin-fin':
