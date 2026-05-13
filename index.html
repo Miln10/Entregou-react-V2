@@ -15,12 +15,12 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <title>Entregou</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 :root{--blue:#185FA5;--blue-l:#E6F1FB;--blue-m:#378ADD;--green:#3B6D11;--green-l:#EAF3DE;--green-m:#639922;--red:#A32D2D;--red-l:#FCEBEB;--amber:#854F0B;--amber-l:#FAEEDA;--purple:#534AB7;--purple-l:#EEEDFE;--border:rgba(0,0,0,0.09);--text:#1a1a1a;--text2:#666;--bg:#fff;--bg2:#F7F7F5;--r:12px;--rs:8px;--font:'Segoe UI',system-ui,sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -122,9 +122,14 @@ window.onerror = function(msg, src, line, col, err) {
 };
 </script>
 <script>
-"use strict";
-const React = window.React;
-const ReactDOM = window.ReactDOM;
+function startApp() {
+  "use strict";
+  if (!window.React || !window.ReactDOM) {
+    setTimeout(startApp, 50);
+    return;
+  }
+  const React = window.React;
+  const ReactDOM = window.ReactDOM;
 const {
   useState,
   useEffect,
@@ -9001,6 +9006,8 @@ function App() {
   return /*#__PURE__*/React.createElement(React.Fragment, null, renderPage(), /*#__PURE__*/React.createElement(NavFAB, null));
 }
 ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(AuthProvider, null, /*#__PURE__*/React.createElement(ToastProvider, null, /*#__PURE__*/React.createElement(App, null))));
+}
+startApp();
 </script>
 
 <script>
