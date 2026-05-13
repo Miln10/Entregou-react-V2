@@ -8247,40 +8247,123 @@ function AdminFin({
   setPage
 }) {
   const toast = useToast();
-  const [tab, setTab] = useState('payments');
+  const [tab, setTab] = useState('cobrar'); // cobrar | pagar | indicacoes | historico
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selWeek, setSelWeek] = useState(0); // 0=atual, -1=anterior
+
   useEffect(() => {
     loadData();
-  }, []);
+  }, [selWeek]);
   const loadData = async () => {
     setLoading(true);
-    const wC = getWeekBounds(0),
-      wP = getWeekBounds(-1),
-      twa = new Date(wP.start);
-    const [or, pa, co, bo] = await Promise.all([db.from('orders').select('*').eq('status', 'done').gte('created_at', getWeekBounds(-1).startStr).order('created_at'), db.from('payments').select('*').gte('created_at', getWeekBounds(-1).startStr), db.from('users').select('*').eq('role', 'courier').order('name'), db.from('referral_bonuses').select('*').order('created_at', {
+    const wS = getWeekBounds(selWeek);
+    const wP = getWeekBounds(selWeek - 1);
+    const from = getWeekBounds(selWeek - 4).startStr;
+    const [or, pa, co, bo] = await Promise.all([db.from('orders').select('*').eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at'), db.from('payments').select('*').gte('created_at', from + 'T00:00:00'), db.from('users').select('*').eq('role', 'courier').order('name'), db.from('referral_bonuses').select('*').order('created_at', {
       ascending: false
     }).limit(100)]);
+    const orders = or.data || [];
+    const payments = pa.data || [];
+    const couriers = co.data || [];
+    const bonuses = bo.data || [];
+
+    // Current selected week orders
+    const wOrders = orders.filter(o => {
+      var _o$created_at6, _o$created_at7;
+      return ((_o$created_at6 = o.created_at) === null || _o$created_at6 === void 0 ? void 0 : _o$created_at6.slice(0, 10)) >= wS.startStr && ((_o$created_at7 = o.created_at) === null || _o$created_at7 === void 0 ? void 0 : _o$created_at7.slice(0, 10)) <= wS.endStr;
+    });
+
+    // Group by client — who owes us
+    const cliMap = {};
+    wOrders.forEach(o => {
+      if (!o.client_name) return;
+      const k = o.client_id || o.client_name;
+      if (!cliMap[k]) cliMap[k] = {
+        id: o.client_id,
+        name: o.client_name,
+        total: 0,
+        count: 0
+      };
+      cliMap[k].total += +o.price || 0;
+      cliMap[k].count++;
+    });
+
+    // Group by courier — who we owe
+    const couMap = {};
+    wOrders.forEach(o => {
+      if (!o.courier_id) return;
+      if (!couMap[o.courier_id]) couMap[o.courier_id] = {
+        id: o.courier_id,
+        name: o.courier_name,
+        number: o.courier_number,
+        total: 0,
+        count: 0
+      };
+      couMap[o.courier_id].total += +o.courier_price || 0;
+      couMap[o.courier_id].count++;
+    });
+
+    // Payments for this week
+    const wps = wS.startStr,
+      wpe = wS.endStr;
+    const exC = payments.filter(p => p.type === 'client_charge' && p.week_start === wps);
+    const exP = payments.filter(p => p.type === 'courier_payout' && p.week_start === wps);
+
+    // Totals
+    const totalReceita = wOrders.reduce((a, o) => a + (+o.price || 0), 0);
+    const totalRepasse = wOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const totalGestora = wOrders.reduce((a, o) => a + (+o.gestora_amount || 0), 0);
+    const totalCobrado = exC.filter(p => p.status === 'paid').reduce((a, p) => a + (+p.amount || 0), 0);
+    const totalPago = exP.filter(p => p.status === 'paid').reduce((a, p) => a + (+p.amount || 0), 0);
+    const aPagar = exP.filter(p => p.status === 'pending').reduce((a, p) => a + (+p.amount || 0), 0);
+
+    // Bonus stats
+    const uBon = bonuses.filter(b => !b.paid).reduce((a, b) => a + +b.amount, 0);
+    const tBon = bonuses.reduce((a, b) => a + +b.amount, 0);
+    const aRef = couriers.filter(c => c.can_refer).length;
     setData({
-      wC,
-      wP,
-      orders: or.data || [],
-      payments: pa.data || [],
-      couriers: co.data || [],
-      bonuses: bo.data || []
+      wS,
+      wOrders,
+      cliMap,
+      couMap,
+      exC,
+      exP,
+      payments,
+      couriers,
+      bonuses,
+      totalReceita,
+      totalRepasse,
+      totalGestora,
+      totalCobrado,
+      totalPago,
+      aPagar,
+      uBon,
+      tBon,
+      aRef,
+      wps,
+      wpe
     });
     setLoading(false);
   };
-  const genCharge = async (name, amt, ws, we) => {
+  const genCharge = async (id, name, amt, wps, wpe) => {
+    const {
+      data: ex
+    } = await db.from('payments').select('id').eq('type', 'client_charge').eq('reference_id', id).eq('week_start', wps).maybeSingle();
+    if (ex) {
+      toast('Cobrança já gerada');
+      return;
+    }
     await db.from('payments').insert({
       type: 'client_charge',
+      reference_id: id,
       reference_name: name,
-      week_start: ws,
-      week_end: we,
+      week_start: wps,
+      week_end: wpe,
       amount: amt,
       status: 'pending'
     });
-    toast(`Cobrança gerada para ${name}`);
+    toast('Cobrança gerada para ' + name + ' ✓');
     loadData();
   };
   const markPaid = async id => {
@@ -8288,13 +8371,13 @@ function AdminFin({
       status: 'paid',
       paid_at: localTimestamp()
     }).eq('id', id);
-    toast('Pagamento registrado ✓');
+    toast('Recebimento confirmado ✓');
     loadData();
   };
-  const genPayout = async (cId, cName, amt, ws, we) => {
+  const genPayout = async (cId, cName, amt, wps, wpe) => {
     const {
       data: ex
-    } = await db.from('payments').select('id').eq('type', 'courier_payout').eq('reference_id', cId).eq('week_start', ws).maybeSingle();
+    } = await db.from('payments').select('id').eq('type', 'courier_payout').eq('reference_id', cId).eq('week_start', wps).maybeSingle();
     if (ex) {
       toast('Repasse já gerado');
       return;
@@ -8303,21 +8386,21 @@ function AdminFin({
       type: 'courier_payout',
       reference_id: cId,
       reference_name: cName,
-      week_start: ws,
-      week_end: we,
+      week_start: wps,
+      week_end: wpe,
       amount: amt,
       status: 'pending'
     });
-    toast(`Repasse preparado para ${cName}`);
+    toast('Repasse preparado para ' + cName + ' ✓');
     loadData();
   };
   const confirmPayout = async (id, name, amt) => {
-    if (!confirm(`Confirmar Pix de ${fmtMoney(amt)} para ${name}?`)) return;
+    if (!confirm('Confirmar Pix de ' + fmtMoney(amt) + ' para ' + name + '?')) return;
     await db.from('payments').update({
       status: 'paid',
       paid_at: localTimestamp()
     }).eq('id', id);
-    toast(`Pix confirmado para ${name} ✓`);
+    toast('Pix confirmado para ' + name + ' ✓');
     loadData();
   };
   const toggleRef = async (id, enable, name, code) => {
@@ -8328,18 +8411,31 @@ function AdminFin({
         referral_code: nc
       })
     }).eq('id', id);
-    toast(enable ? `${name} pode indicar ✓` : 'Permissão revogada');
+    toast(enable ? name + ' pode indicar ✓' : 'Permissão revogada');
     loadData();
   };
   const payBonuses = async (id, name, amt) => {
-    if (!confirm(`Pagar bônus de ${fmtMoney(amt)} para ${name}?`)) return;
+    if (!confirm('Pagar bônus de ' + fmtMoney(amt) + ' para ' + name + '?')) return;
     await db.from('referral_bonuses').update({
       paid: true,
       paid_at: localTimestamp()
     }).eq('earner_id', id).eq('paid', false);
-    toast(`Bônus pago para ${name} ✓`);
+    toast('Bônus pago para ' + name + ' ✓');
     loadData();
   };
+  const ts = t => ({
+    padding: '10px 14px',
+    fontSize: 13,
+    fontWeight: tab === t ? 600 : 400,
+    cursor: 'pointer',
+    color: tab === t ? 'var(--blue)' : 'var(--text2)',
+    borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
+    background: 'none',
+    border: 'none',
+    borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
+    fontFamily: 'var(--font)',
+    whiteSpace: 'nowrap'
+  });
   if (loading) return /*#__PURE__*/React.createElement(AdminShell, {
     page: "admin-fin",
     setPage: setPage
@@ -8349,67 +8445,27 @@ function AdminFin({
     badgeClass: "ba"
   }), /*#__PURE__*/React.createElement(Loading, null));
   const {
-    wC,
-    wP,
-    orders,
+    wS,
+    wOrders,
+    cliMap,
+    couMap,
+    exC,
+    exP,
     payments,
     couriers,
-    bonuses
+    bonuses,
+    totalReceita,
+    totalRepasse,
+    totalGestora,
+    totalCobrado,
+    totalPago,
+    aPagar,
+    uBon,
+    tBon,
+    aRef,
+    wps,
+    wpe
   } = data;
-  const prev = orders.filter(o => {
-      const d = new Date(o.created_at);
-      return d >= wP.start && d <= wP.end;
-    }),
-    curr = orders.filter(o => {
-      const d = new Date(o.created_at);
-      return d >= wC.start && d <= wC.end;
-    });
-  const wps = wP.startStr,
-    wpe = wP.endStr;
-  const cliMap = {};
-  prev.forEach(o => {
-    if (!o.client_name) return;
-    if (!cliMap[o.client_name]) cliMap[o.client_name] = {
-      name: o.client_name,
-      total: 0,
-      count: 0
-    };
-    cliMap[o.client_name].total += +o.price;
-    cliMap[o.client_name].count++;
-  });
-  const couMap = {};
-  prev.forEach(o => {
-    if (!o.courier_id) return;
-    if (!couMap[o.courier_id]) couMap[o.courier_id] = {
-      id: o.courier_id,
-      name: o.courier_name,
-      total: 0,
-      count: 0
-    };
-    couMap[o.courier_id].total += o.courier_price ? +o.courier_price : +o.price * .8;
-    couMap[o.courier_id].count++;
-  });
-  const exC = payments.filter(p => p.type === 'client_charge' && p.week_start === wps),
-    exP = payments.filter(p => p.type === 'courier_payout' && p.week_start === wps);
-  const rev = curr.reduce((a, o) => a + +o.price, 0),
-    margin = curr.reduce((a, o) => a + (+o.price - (o.courier_price ? +o.courier_price : +o.price * .8)), 0),
-    pendC = payments.filter(p => p.type === 'courier_payout' && p.status === 'pending').reduce((a, p) => a + +p.amount, 0);
-  const nextWed = new Date(wC.start);
-  nextWed.setDate(nextWed.getDate() + 2);
-  const aRef = couriers.filter(c => c.can_refer).length,
-    tBon = bonuses.reduce((a, b) => a + +b.amount, 0),
-    uBon = bonuses.filter(b => !b.paid).reduce((a, b) => a + +b.amount, 0);
-  const ts = t => ({
-    padding: '10px 16px',
-    fontSize: 13,
-    fontWeight: tab === t ? 600 : 400,
-    cursor: 'pointer',
-    color: tab === t ? 'var(--blue)' : 'var(--text2)',
-    borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
-    background: 'none',
-    border: 'none',
-    fontFamily: 'var(--font)'
-  });
   return /*#__PURE__*/React.createElement(AdminShell, {
     page: "admin-fin",
     setPage: setPage
@@ -8422,71 +8478,109 @@ function AdminFin({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
-      borderBottom: '1px solid var(--border)'
+      gap: 6,
+      padding: '10px 14px 8px'
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    style: ts('payments'),
-    onClick: () => setTab('payments')
-  }, "Pagamentos"), /*#__PURE__*/React.createElement("button", {
-    style: ts('referrals'),
-    onClick: () => setTab('referrals')
-  }, "Indica\xE7\xF5es")), tab === 'payments' && /*#__PURE__*/React.createElement("div", {
+  }, [[0, 'Semana atual'], [-1, 'Semana anterior'], [-2, 'Há 2 semanas']].map(([v, l]) => /*#__PURE__*/React.createElement("button", {
+    key: v,
+    onClick: () => setSelWeek(v),
     style: {
-      padding: '14px 14px 0'
+      padding: '6px 12px',
+      borderRadius: 20,
+      border: '1px solid var(--border)',
+      background: selWeek === v ? 'var(--blue)' : 'var(--bg)',
+      color: selWeek === v ? 'white' : 'var(--text2)',
+      fontSize: 12,
+      fontWeight: selWeek === v ? 600 : 400,
+      cursor: 'pointer',
+      fontFamily: 'var(--font)'
+    }
+  }, l))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)',
+      padding: '0 14px 10px'
+    }
+  }, fmtDate(wS.startStr), " a ", fmtDate(wS.endStr), " \xB7 ", wOrders.length, " entregas"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 8,
+      padding: '0 14px 14px'
     }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "kgrid"
+    className: "mcard",
+    style: {
+      background: 'var(--blue-l)'
+    }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
+    className: "mval",
+    style: {
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(totalReceita)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl",
+    style: {
+      color: 'var(--blue)'
+    }
+  }, "a receber dos clientes")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard",
+    style: {
+      background: 'var(--green-l)'
+    }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, fmtMoney(rev)), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "receita bruta")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, fmtMoney(margin)), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "margem")), /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval"
-  }, curr.length), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "entregas")), /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      color: 'var(--green)'
+    }
+  }, fmtMoney(totalRepasse)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl",
+    style: {
+      color: 'var(--green)'
+    }
+  }, "a pagar entregadores")), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval",
     style: {
       color: 'var(--amber)'
     }
-  }, fmtMoney(pendC)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(totalGestora)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "a repassar"))), /*#__PURE__*/React.createElement("div", {
+  }, "margem gestora")), /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval"
+  }, wOrders.length), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "entregas"))), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: 'var(--text2)',
-      textTransform: 'uppercase',
-      letterSpacing: '.06em',
-      marginBottom: 4
+      display: 'flex',
+      borderBottom: '1px solid var(--border)',
+      overflowX: 'auto'
     }
-  }, "Cobran\xE7as clientes \u2014 semana anterior"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("button", {
+    style: ts('cobrar'),
+    onClick: () => setTab('cobrar')
+  }, "\uD83D\uDC99 Cobrar clientes"), /*#__PURE__*/React.createElement("button", {
+    style: ts('pagar'),
+    onClick: () => setTab('pagar')
+  }, "\uD83D\uDC9A Pagar entregadores"), /*#__PURE__*/React.createElement("button", {
+    style: ts('indicacoes'),
+    onClick: () => setTab('indicacoes')
+  }, "\uD83D\uDD17 Indica\xE7\xF5es"), /*#__PURE__*/React.createElement("button", {
+    style: ts('historico'),
+    onClick: () => setTab('historico')
+  }, "\uD83D\uDCCB Hist\xF3rico")), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 12,
-      color: 'var(--text2)',
-      marginBottom: 10
+      padding: '12px 14px 0'
     }
-  }, fmtDate(wP.start), " a ", fmtDate(wP.end), " \xB7 vence ", fmtDate(nextWed)), Object.values(cliMap).length === 0 ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: '0 0 14px'
-    }
-  }, "Nenhuma entrega na semana anterior.") : Object.values(cliMap).map(c => {
-    const ex = exC.find(p => p.reference_name === c.name);
+  }, Object.keys(cliMap).length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "notice ni"
+  }, "Nenhuma entrega nesta semana para cobrar.") : Object.values(cliMap).map(cl => {
+    const ex = exC.find(p => p.reference_id === cl.id);
     return /*#__PURE__*/React.createElement("div", {
-      key: c.name,
+      key: cl.id,
       className: "ocard",
       style: {
         margin: '0 0 8px'
@@ -8496,62 +8590,64 @@ function AdminFin({
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'flex-start',
-        marginBottom: 8
+        marginBottom: 10
       }
     }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 13,
-        fontWeight: 600
+        fontSize: 14,
+        fontWeight: 700
       }
-    }, "\uD83D\uDC64 ", c.name), /*#__PURE__*/React.createElement("div", {
+    }, "\uD83C\uDFEA ", cl.name), /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 11,
+        fontSize: 12,
         color: 'var(--text2)'
       }
-    }, c.count, " entrega", c.count > 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
+    }, cl.count, " entrega", cl.count !== 1 ? 's' : '', " \xB7 ", fmtDate(wS.startStr), " a ", fmtDate(wS.endStr))), /*#__PURE__*/React.createElement("div", {
       style: {
-        textAlign: 'right'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 15,
+        fontSize: 18,
         fontWeight: 700,
         color: 'var(--blue)'
       }
-    }, fmtMoney(c.total)), (ex === null || ex === void 0 ? void 0 : ex.status) === 'paid' && /*#__PURE__*/React.createElement("span", {
-      className: "sbadge sdone"
-    }, "\u2713 Pago"), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("span", {
-      className: "sbadge sw"
-    }, "Pendente"))), /*#__PURE__*/React.createElement("div", {
+    }, fmtMoney(cl.total))), !ex && /*#__PURE__*/React.createElement("button", {
+      className: "btn-sm accept",
+      style: {
+        width: '100%',
+        padding: '9px'
+      },
+      onClick: () => genCharge(cl.id, cl.name, cl.total, wps, wpe)
+    }, "Gerar cobran\xE7a de ", fmtMoney(cl.total)), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
-        gap: 6
+        gap: 8,
+        alignItems: 'center'
       }
-    }, !ex && /*#__PURE__*/React.createElement("button", {
-      className: "btn-sm accept",
-      onClick: () => genCharge(c.name, c.total, wps, wpe)
-    }, "Gerar cobran\xE7a"), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("button", {
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        fontSize: 12,
+        color: 'var(--amber)',
+        fontWeight: 600
+      }
+    }, "\u23F3 Cobran\xE7a enviada \u2014 aguardando pagamento"), /*#__PURE__*/React.createElement("button", {
       className: "btn-sm progress",
       onClick: () => markPaid(ex.id)
-    }, "Marcar como pago")));
-  }), /*#__PURE__*/React.createElement("div", {
+    }, "\u2713 Recebi")), (ex === null || ex === void 0 ? void 0 : ex.status) === 'paid' && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--green)',
+        fontWeight: 600
+      }
+    }, "\u2705 Pago em ", fmtDate(ex.paid_at)));
+  })), tab === 'pagar' && /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: 'var(--text2)',
-      textTransform: 'uppercase',
-      letterSpacing: '.06em',
-      margin: '14px 0 10px'
+      padding: '12px 14px 0'
     }
-  }, "Repasse entregadores \u2014 semana anterior"), Object.values(couMap).length === 0 ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ni",
-    style: {
-      margin: '0 0 14px'
-    }
-  }, "Nenhuma entrega na semana anterior.") : Object.values(couMap).map(c => {
-    const ex = exP.find(p => p.reference_id === c.id);
+  }, Object.keys(couMap).length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "notice ni"
+  }, "Nenhuma entrega nesta semana para repassar.") : Object.values(couMap).sort((a, b) => b.total - a.total).map(co => {
+    const ex = exP.find(p => p.reference_id === co.id);
     return /*#__PURE__*/React.createElement("div", {
-      key: c.id,
+      key: co.id,
       className: "ocard",
       style: {
         margin: '0 0 8px'
@@ -8561,93 +8657,67 @@ function AdminFin({
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'flex-start',
-        marginBottom: 8
+        marginBottom: 10
       }
     }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 13,
-        fontWeight: 600
+        fontSize: 14,
+        fontWeight: 700
       }
-    }, "\uD83D\uDEF5 ", c.name), /*#__PURE__*/React.createElement("div", {
+    }, "\uD83D\uDEF5 ", co.name, co.number ? ' #' + co.number : ''), /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 11,
+        fontSize: 12,
         color: 'var(--text2)'
       }
-    }, c.count, " entrega", c.count > 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
+    }, co.count, " entrega", co.count !== 1 ? 's' : '', " \xB7 ", fmtDate(wS.startStr), " a ", fmtDate(wS.endStr))), /*#__PURE__*/React.createElement("div", {
       style: {
-        textAlign: 'right'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 15,
+        fontSize: 18,
         fontWeight: 700,
         color: 'var(--green)'
       }
-    }, fmtMoney(c.total)), (ex === null || ex === void 0 ? void 0 : ex.status) === 'paid' && /*#__PURE__*/React.createElement("span", {
-      className: "sbadge sdone"
-    }, "\u2713 Pago"), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("span", {
-      className: "sbadge sw"
-    }, "Pendente"))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        gap: 6
-      }
-    }, !ex && /*#__PURE__*/React.createElement("button", {
+    }, fmtMoney(co.total))), !ex && /*#__PURE__*/React.createElement("button", {
       className: "btn-sm",
       style: {
+        width: '100%',
+        padding: '9px',
         background: 'var(--green-l)',
-        borderColor: 'var(--green-m)',
+        borderColor: 'var(--green)',
         color: 'var(--green)'
       },
-      onClick: () => genPayout(c.id, c.name, c.total, wps, wpe)
-    }, "Preparar Pix"), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("button", {
+      onClick: () => genPayout(co.id, co.name, co.total, wps, wpe)
+    }, "Preparar Pix de ", fmtMoney(co.total)), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        gap: 8,
+        alignItems: 'center'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        fontSize: 12,
+        color: 'var(--amber)',
+        fontWeight: 600
+      }
+    }, "\u23F3 Aguardando envio do Pix"), /*#__PURE__*/React.createElement("button", {
       className: "btn-sm progress",
-      onClick: () => confirmPayout(ex.id, c.name, c.total)
-    }, "Confirmar Pix enviado")));
-  }), /*#__PURE__*/React.createElement("div", {
+      onClick: () => confirmPayout(ex.id, co.name, co.total)
+    }, "\u2713 Pix enviado")), (ex === null || ex === void 0 ? void 0 : ex.status) === 'paid' && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--green)',
+        fontWeight: 600
+      }
+    }, "\u2705 Pix enviado em ", fmtDate(ex.paid_at)));
+  })), tab === 'indicacoes' && /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: 'var(--text2)',
-      textTransform: 'uppercase',
-      letterSpacing: '.06em',
-      margin: '14px 0 10px'
-    }
-  }, "Hist\xF3rico"), payments.filter(p => p.status === 'paid').sort((a, b) => new Date(b.paid_at) - new Date(a.paid_at)).slice(0, 20).map(p => /*#__PURE__*/React.createElement("div", {
-    key: p.id,
-    style: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '9px 0',
-      borderBottom: '1px solid var(--border)'
-    }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600
-    }
-  }, p.type === 'client_charge' ? '👤' : '🛵', " ", p.reference_name), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--text2)'
-    }
-  }, p.type === 'client_charge' ? 'Cobrança' : 'Repasse', " \xB7 ", fmtDate(p.paid_at))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 14,
-      fontWeight: 700,
-      color: p.type === 'client_charge' ? 'var(--blue)' : 'var(--green)'
-    }
-  }, fmtMoney(p.amount))))), tab === 'referrals' && /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '14px 14px 0'
+      padding: '12px 14px 0'
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'grid',
       gridTemplateColumns: '1fr 1fr 1fr',
       gap: 8,
-      marginBottom: 16
+      marginBottom: 14
     }
   }, /*#__PURE__*/React.createElement("div", {
     className: "mcard"
@@ -8664,18 +8734,18 @@ function AdminFin({
     }
   }, fmtMoney(uBon)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "a pagar")), /*#__PURE__*/React.createElement("div", {
+  }, "b\xF4nus a pagar")), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
   }, fmtMoney(tBon)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "hist\xF3rico"))), couriers.map(c => {
-    const mb = bonuses.filter(b => b.earner_id === c.id),
-      mu = mb.filter(b => !b.paid).reduce((a, b) => a + +b.amount, 0),
-      mn = couriers.filter(x => x.referred_by === c.id).length;
+  }, "hist\xF3rico"))), couriers.map(co => {
+    const mb = bonuses.filter(b => b.earner_id === co.id);
+    const mu = mb.filter(b => !b.paid).reduce((a, b) => a + +b.amount, 0);
+    if (!co.can_refer && mu === 0) return null;
     return /*#__PURE__*/React.createElement("div", {
-      key: c.id,
+      key: co.id,
       className: "ocard",
       style: {
         margin: '0 0 8px'
@@ -8692,39 +8762,75 @@ function AdminFin({
         fontSize: 13,
         fontWeight: 600
       }
-    }, "\uD83D\uDEF5 ", c.name), /*#__PURE__*/React.createElement("div", {
+    }, "\uD83D\uDEF5 ", co.name), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: 'var(--text2)'
       }
-    }, "Rede: ", mn, " indicado", mn !== 1 ? 's' : '', " \xB7 B\xF4nus pendente: ", fmtMoney(mu)), c.referral_code && /*#__PURE__*/React.createElement("div", {
+    }, mb.length, " b\xF4nus \xB7 pendente: ", fmtMoney(mu)), co.referral_code && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: 'var(--blue)',
         marginTop: 2
       }
-    }, "C\xF3digo: ", /*#__PURE__*/React.createElement("strong", null, c.referral_code))), /*#__PURE__*/React.createElement("span", {
-      className: `sbadge ${c.can_refer ? 'sdone' : 'scanc'}`
-    }, c.can_refer ? '✓ Pode indicar' : 'Bloqueado')), /*#__PURE__*/React.createElement("div", {
+    }, "C\xF3digo: ", co.referral_code)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        padding: '2px 8px',
+        borderRadius: 20,
+        fontWeight: 600,
+        background: co.can_refer ? 'var(--green-l)' : 'var(--red-l)',
+        color: co.can_refer ? 'var(--green)' : 'var(--red)'
+      }
+    }, co.can_refer ? '✓ Pode indicar' : 'Bloqueado')), /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         gap: 6,
         flexWrap: 'wrap'
       }
-    }, !c.can_refer ? /*#__PURE__*/React.createElement("button", {
+    }, !co.can_refer ? /*#__PURE__*/React.createElement("button", {
       className: "btn-sm accept",
-      onClick: () => toggleRef(c.id, true, c.name, c.referral_code)
-    }, "Liberar para indicar") : /*#__PURE__*/React.createElement("button", {
+      onClick: () => toggleRef(co.id, true, co.name, co.referral_code)
+    }, "Liberar indica\xE7\xE3o") : /*#__PURE__*/React.createElement("button", {
       className: "btn-sm danger",
-      onClick: () => toggleRef(c.id, false, c.name, c.referral_code)
-    }, "Revogar permiss\xE3o"), mu > 0 && /*#__PURE__*/React.createElement("button", {
+      onClick: () => toggleRef(co.id, false, co.name, co.referral_code)
+    }, "Revogar"), mu > 0 && /*#__PURE__*/React.createElement("button", {
       className: "btn-sm progress",
-      onClick: () => payBonuses(c.id, c.name, mu)
+      onClick: () => payBonuses(co.id, co.name, mu)
     }, "Pagar b\xF4nus ", fmtMoney(mu))));
-  }))));
+  })), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '12px 14px 0'
+    }
+  }, payments.filter(p => p.status === 'paid').sort((a, b) => new Date(b.paid_at) - new Date(a.paid_at)).slice(0, 30).map(p => /*#__PURE__*/React.createElement("div", {
+    key: p.id,
+    style: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: '10px 0',
+      borderBottom: '1px solid var(--border)'
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, p.type === 'client_charge' ? '💙' : '💚', " ", p.reference_name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text2)'
+    }
+  }, p.type === 'client_charge' ? 'Recebido' : 'Pago', " em ", fmtDate(p.paid_at), " \xB7 ", fmtDate(p.week_start), " a ", fmtDate(p.week_end))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: p.type === 'client_charge' ? 'var(--blue)' : 'var(--green)'
+    }
+  }, fmtMoney(p.amount)))), payments.filter(p => p.status === 'paid').length === 0 && /*#__PURE__*/React.createElement("div", {
+    className: "notice ni"
+  }, "Nenhum pagamento registrado ainda."))));
 }
-
-// ===== MAIN APP =====
 function App() {
   const {
     profile,
