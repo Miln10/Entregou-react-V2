@@ -4959,6 +4959,7 @@ function ClientFin({
   const [tab, setTab] = useState('week');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [expandedCourier, setExpandedCourier] = useState(null);
   const load = useCallback(async () => {
     if (!profile) return;
     const wC = getWeekBounds(0),
@@ -5110,15 +5111,22 @@ function ClientFin({
     }
   }, "Por entregador"), byCourier.sort((a, b) => b.count - a.count).map(co => {
     var _co$name;
+    const expanded = expandedCourier === co.id;
+    const coOrders = currOrders.filter(o => o.courier_id === co.id);
     return /*#__PURE__*/React.createElement("div", {
       key: co.id,
+      style: {
+        borderBottom: '1px solid var(--border)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         alignItems: 'center',
         gap: 10,
         padding: '10px 0',
-        borderBottom: '1px solid var(--border)'
-      }
+        cursor: 'pointer'
+      },
+      onClick: () => setExpandedCourier(expanded ? null : co.id)
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: 34,
@@ -5151,9 +5159,47 @@ function ClientFin({
       style: {
         fontSize: 14,
         fontWeight: 700,
+        color: 'var(--blue)',
+        marginRight: 6
+      }
+    }, fmtMoney(co.total)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--text2)'
+      }
+    }, expanded ? '▲' : '▼')), expanded && /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: 'var(--bg2)',
+        borderRadius: 'var(--rs)',
+        padding: '6px 10px',
+        marginBottom: 8
+      }
+    }, coOrders.map((o, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '6px 0',
+        borderBottom: i < coOrders.length - 1 ? '1px solid var(--border)' : ''
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 500
+      }
+    }, o.neighborhood || o.item_desc || 'Entrega'), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text2)'
+      }
+    }, fmtDate(o.created_at))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
         color: 'var(--blue)'
       }
-    }, fmtMoney(co.total)));
+    }, fmtMoney(o.price))))));
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       margin: '12px 0',
@@ -11354,15 +11400,7 @@ function App() {
 }
 ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(AuthProvider, null, /*#__PURE__*/React.createElement(ToastProvider, null, /*#__PURE__*/React.createElement(App, null))));
 }
-function tryStart(attempts) {
-  if (window.React && window.React.useState && window.ReactDOM) {
-    startApp();
-  } else if (attempts > 0) {
-    setTimeout(() => tryStart(attempts - 1), 50);
-  } else {
-    document.getElementById('root').innerHTML = '<div style="color:red;padding:20px">Erro ao carregar. Recarregue a página.</div>';
-  }
-}
+function tryStart(n){if(window.React&&window.React.useState&&window.ReactDOM){startApp();}else if(n>0){setTimeout(()=>tryStart(n-1),50);}else{document.getElementById('root').innerHTML='<div style="color:red;padding:20px">Erro ao carregar. Recarregue a p\u00e1gina.</div>';}}
 tryStart(100);
 </script>
 
