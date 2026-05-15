@@ -4872,7 +4872,7 @@ function CourierDash({
         is_online: true,
         location_updated_at: localTimestamp()
       }).eq('id', profile.id);
-    }, {
+    }, err => console.warn('GPS erro:', err.message), {
       enableHighAccuracy: true,
       maximumAge: 10000
     });
