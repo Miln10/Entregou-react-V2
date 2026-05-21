@@ -9521,13 +9521,10 @@ function AdminReports({
   }), /*#__PURE__*/React.createElement("div", {
     className: "scroll"
   }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '12px 14px 0'
-    }
+    style: { padding: '12px 14px 0' }
   }, kpis && /*#__PURE__*/React.createElement("div", {
     style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }
-  },
-    /*#__PURE__*/React.createElement("div", { className: "mcard", style: { background: 'var(--blue-l)' } },
+  }, /*#__PURE__*/React.createElement("div", { className: "mcard", style: { background: 'var(--blue-l)' } },
       /*#__PURE__*/React.createElement("div", { className: "mval", style: { color: 'var(--blue)', fontSize: 22 } }, kpis.entregas),
       /*#__PURE__*/React.createElement("div", { className: "mlbl" }, "entregas esta semana")),
     /*#__PURE__*/React.createElement("div", { className: "mcard", style: { background: 'var(--green-l)' } },
@@ -9539,8 +9536,8 @@ function AdminReports({
     /*#__PURE__*/React.createElement("div", { className: "mcard", style: { background: kpis.online > 0 ? 'var(--green-l)' : '' } },
       /*#__PURE__*/React.createElement("div", { className: "mval", style: { color: kpis.online > 0 ? 'var(--green)' : 'var(--text2)', fontSize: 22 } },
         /*#__PURE__*/React.createElement("span", { className: "rdot" }), " ", kpis.online),
-      /*#__PURE__*/React.createElement("div", { className: "mlbl" }, "entregadores online"))
-  ), /*#__PURE__*/React.createElement("div", {
+      /*#__PURE__*/React.createElement("div", { className: "mlbl" }, "entregadores online"))),
+  /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'grid',
       gridTemplateColumns: '1fr 1fr',
@@ -10850,7 +10847,7 @@ function AdminRelatorio({
                   /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCCD ", reg, " (", data.count, "x)"),
                   /*#__PURE__*/React.createElement("span", { style: { color: 'var(--blue)', fontWeight: 600 } }, fmtMoney(data.total))))
             ))
-    ))))));
+    )));
 }
 function AdminFin({
   setPage
