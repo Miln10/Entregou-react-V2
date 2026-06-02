@@ -3518,24 +3518,37 @@ function CourierFin({
     // Nível 0 (referred_by = null) vai direto para cliente
     // Nível 1 e 2 passam pela aprovação do Nível 0 primeiro
     const isLevel0 = !profile.referred_by;
+    const targetCourier = launchFor !== 'self' ? couriers.find(c => c.id === launchFor) : null;
     const payload = {
-      courier_id: profile.id,
-      courier_name: profile.name,
-      courier_number: profile.courier_number || null,
+      courier_id: targetCourier ? targetCourier.id : profile.id,
+      courier_name: targetCourier ? targetCourier.name : profile.name,
+      courier_number: targetCourier ? (targetCourier.courier_number || null) : (profile.courier_number || null),
       client_id: selClient,
       client_name: (client === null || client === void 0 ? void 0 : client.name) || '',
       date,
       courier_submission: submission,
-      status: isLevel0 ? 'pending' : 'pending_l0',
+      status: (isLevel0 || targetCourier) ? 'pending' : 'pending_l0',
       updated_at: localTimestamp()
     };
-    if (ex) await db.from('daily_closings').update(payload).eq('id', ex.id);else await db.from('daily_closings').insert(payload);
+    let dbError = null;
+    if (ex) {
+      const { error } = await db.from('daily_closings').update(payload).eq('id', ex.id);
+      dbError = error;
+    } else {
+      const { error } = await db.from('daily_closings').insert(payload);
+      dbError = error;
+    }
     setSubmitting(false);
+    if (dbError) {
+      toast('Erro ao salvar: ' + (dbError.message || JSON.stringify(dbError)));
+      return;
+    }
     toast(isLevel0 ? 'Lançamento enviado! Cliente irá confirmar. 📋' : 'Lançamento enviado! Aguardando aprovação do responsável. 📋');
     setSelClient('');
     setQuantities({});
     setPriceItems([]);
     setLaunchDay(null);
+    setLaunchFor('self');
     loadAll();
   };
   const copy = link => {
@@ -3918,7 +3931,16 @@ function CourierFin({
         padding: '10px 12px',
         borderTop: '1px solid var(--border)'
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, !profile.referred_by && myTeam.length > 0 && /*#__PURE__*/React.createElement("div", { style: { marginBottom: 8 } },
+      /*#__PURE__*/React.createElement("label", { className: "flabel" }, "Lan\xE7ar por"),
+      /*#__PURE__*/React.createElement("select", {
+        value: launchFor,
+        onChange: e => setLaunchFor(e.target.value)
+      },
+        /*#__PURE__*/React.createElement("option", { value: "self" }, "\uD83D\uDEF5 Eu mesmo (" + profile.name + ")"),
+        myTeam.map(c => /*#__PURE__*/React.createElement("option", { key: c.id, value: c.id }, "\uD83D\uDEF5 ", c.name, c.courier_number ? ' #'+c.courier_number : ''))
+      )
+    ), /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 8
       }
@@ -5133,15 +5155,18 @@ function ClientFin({
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [expandedCourier, setExpandedCourier] = useState(null);
+  const [expandedHistCourier, setExpandedHistCourier] = useState(null);
   const _nowCLI = new Date();
-  const [histMonthC, setHistMonthC] = useState(_nowCLI.getMonth() + 1);
-  const [histYearC, setHistYearC] = useState(_nowCLI.getFullYear());
+  const _todayStr = _nowCLI.getFullYear() + '-' + String(_nowCLI.getMonth()+1).padStart(2,'0') + '-' + String(_nowCLI.getDate()).padStart(2,'0');
+  const _weekAgoStr = (() => { const d = new Date(_nowCLI); d.setDate(d.getDate()-6); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); })();
+  const [histFrom, setHistFrom] = useState(_weekAgoStr);
+  const [histTo, setHistTo] = useState(_todayStr);
   const [histOrdersC, setHistOrdersC] = useState([]);
   const [histLoadingC, setHistLoadingC] = useState(false);
-  const loadHistC = async (month, year) => {
+  const loadHistC = async (from, to) => {
+    if (!from || !to) return;
     setHistLoadingC(true);
-    const from = year + '-' + String(month).padStart(2,'0') + '-01';
-    const to = year + '-' + String(month).padStart(2,'0') + '-' + String(new Date(year, month, 0).getDate()).padStart(2,'0');
+    setExpandedHistCourier(null);
     const { data } = await db.from('orders').select('id,courier_id,courier_name,courier_number,price,created_at,neighborhood,item_desc').eq('client_id', profile.id).eq('status','done').gte('created_at', from+'T00:00:00').lte('created_at', to+'T23:59:59').order('created_at',{ascending:false});
     setHistOrdersC(data||[]);
     setHistLoadingC(false);
@@ -5488,40 +5513,65 @@ function ClientFin({
     }
   }, fmtMoney(o.price))))), tab === 'history' && /*#__PURE__*/React.createElement("div", {
     style: { padding: '14px 14px 0' }
-  }, /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14 } },
-    /*#__PURE__*/React.createElement("select", { value: histMonthC, onChange: e => setHistMonthC(+e.target.value), style: { flex: 1, fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } },
-      ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'].map((m,i) => /*#__PURE__*/React.createElement("option", { key: i+1, value: i+1 }, m))),
-    /*#__PURE__*/React.createElement("select", { value: histYearC, onChange: e => setHistYearC(+e.target.value), style: { flex: 1, fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } },
-      Array.from({ length: 3 }, (_, i) => new Date().getFullYear() - i).map(y => /*#__PURE__*/React.createElement("option", { key: y, value: y }, y))),
-    /*#__PURE__*/React.createElement("button", { className: "btn-sm accept", onClick: () => loadHistC(histMonthC, histYearC) }, "Buscar")
-  ), histLoadingC ? /*#__PURE__*/React.createElement(Loading, null) : histOrdersC.length === 0 ? /*#__PURE__*/React.createElement("div", { className: "notice ni" }, "Clique em Buscar para carregar.") : (() => {
-    const wks = {};
-    histOrdersC.forEach(o => { const d=(o.created_at||'').slice(0,10); if (!d) return; const wb=getWeekBoundsFromDate(d); if (!wks[wb.startStr]) wks[wb.startStr]={startStr:wb.startStr,endStr:wb.endStr,orders:[]}; wks[wb.startStr].orders.push(o); });
-    const totalMes = histOrdersC.reduce((a,o)=>a+(+o.price||0),0);
+  }, /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' } },
+    /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 4 } }, "De"),
+      /*#__PURE__*/React.createElement("input", { type: "date", value: histFrom, onChange: e => setHistFrom(e.target.value),
+        style: { width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } })
+    ),
+    /*#__PURE__*/React.createElement("div", { flex: 1 },
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 4 } }, "Até"),
+      /*#__PURE__*/React.createElement("input", { type: "date", value: histTo, onChange: e => setHistTo(e.target.value),
+        style: { width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } })
+    ),
+    /*#__PURE__*/React.createElement("button", { className: "btn-sm accept", style: { alignSelf: 'flex-end', whiteSpace: 'nowrap' }, onClick: () => loadHistC(histFrom, histTo) }, "Buscar")
+  ), histLoadingC ? /*#__PURE__*/React.createElement(Loading, null) : histOrdersC.length === 0 ? /*#__PURE__*/React.createElement("div", { className: "notice ni" }, "Selecione um per\xEDodo e clique em Buscar.") : (() => {
+    // Agrupar por entregador
+    const totalPeriodo = histOrdersC.reduce((a,o) => a+(+o.price||0), 0);
+    const byCourier = {};
+    histOrdersC.forEach(o => {
+      const k = o.courier_id || o.courier_name;
+      if (!byCourier[k]) byCourier[k] = { id: k, name: o.courier_name, number: o.courier_number, orders: [], total: 0 };
+      byCourier[k].orders.push(o);
+      byCourier[k].total += +o.price || 0;
+    });
+    const couriers = Object.values(byCourier).sort((a,b) => b.total - a.total);
     return /*#__PURE__*/React.createElement(React.Fragment, null,
       /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14 } },
-        /*#__PURE__*/React.createElement("div", { className: "mcard", style: { flex: 1 } }, /*#__PURE__*/React.createElement("div", { className: "mval", style: { color: 'var(--blue)' } }, fmtMoney(totalMes)), /*#__PURE__*/React.createElement("div", { className: "mlbl" }, "total do m\xEAs")),
-        /*#__PURE__*/React.createElement("div", { className: "mcard", style: { flex: 1 } }, /*#__PURE__*/React.createElement("div", { className: "mval" }, histOrdersC.length), /*#__PURE__*/React.createElement("div", { className: "mlbl" }, "entregas"))
+        /*#__PURE__*/React.createElement("div", { className: "mcard", style: { flex: 1 } },
+          /*#__PURE__*/React.createElement("div", { className: "mval", style: { color: 'var(--blue)' } }, fmtMoney(totalPeriodo)),
+          /*#__PURE__*/React.createElement("div", { className: "mlbl" }, "total do per\xEDodo")
+        ),
+        /*#__PURE__*/React.createElement("div", { className: "mcard", style: { flex: 1 } },
+          /*#__PURE__*/React.createElement("div", { className: "mval" }, histOrdersC.length),
+          /*#__PURE__*/React.createElement("div", { className: "mlbl" }, "entregas")
+        )
       ),
-      Object.values(wks).sort((a,b)=>b.startStr.localeCompare(a.startStr)).map(wk => {
-        const totalSem = wk.orders.reduce((a,o)=>a+(+o.price||0),0);
-        const byCourier = {};
-        wk.orders.forEach(o => { const k=o.courier_id||o.courier_name; if (!byCourier[k]) byCourier[k]={name:o.courier_name,number:o.courier_number,orders:[],total:0}; byCourier[k].orders.push(o); byCourier[k].total+=(+o.price||0); });
-        return /*#__PURE__*/React.createElement("div", { key: wk.startStr, style: { border: '1px solid var(--border)', borderRadius: 'var(--r)', marginBottom: 10, overflow: 'hidden' } },
-          /*#__PURE__*/React.createElement("div", { style: { padding: '10px 12px', background: 'var(--bg2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-            /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700 } }, "Semana ", fmtDate(wk.startStr), " \u2014 ", fmtDate(wk.endStr)), /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, wk.orders.length, " entrega(s)")),
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: 'var(--blue)' } }, fmtMoney(totalSem))
-          ),
-          Object.values(byCourier).map((co,ci) => /*#__PURE__*/React.createElement("div", { key: ci },
-            /*#__PURE__*/React.createElement("div", { style: { padding: '7px 12px', borderTop: '1px solid var(--border)', background: 'var(--bg2)', display: 'flex', justifyContent: 'space-between' } },
-              /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 600 } }, "\uD83D\uDEF5 ", co.name, co.number ? " #"+co.number : ""),
-              /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: 'var(--blue)' } }, co.orders.length, " \xB7 ", fmtMoney(co.total))
+      couriers.map(co => {
+        const expanded = expandedHistCourier === co.id;
+        return /*#__PURE__*/React.createElement("div", { key: co.id, style: { border: '1px solid var(--border)', borderRadius: 'var(--r)', marginBottom: 8, overflow: 'hidden' } },
+          /*#__PURE__*/React.createElement("div", {
+            style: { padding: '10px 12px', background: 'var(--bg2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' },
+            onClick: () => setExpandedHistCourier(expanded ? null : co.id)
+          },
+            /*#__PURE__*/React.createElement("div", null,
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 600 } }, "\uD83D\uDEF5 ", co.name, co.number ? " #"+co.number : ""),
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, co.orders.length, " entrega(s)")
             ),
-            co.orders.map((o,oi) => /*#__PURE__*/React.createElement("div", { key: oi, style: { padding: '6px 12px 6px 20px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between' } },
-              /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", { style: { fontSize: 12 } }, o.neighborhood||o.item_desc||'Entrega'), /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)' } }, fmtDate(o.created_at))),
+            /*#__PURE__*/React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: 'var(--blue)' } }, fmtMoney(co.total)),
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: 'var(--text2)' } }, expanded ? "\u25B2" : "\u25BC")
+            )
+          ),
+          expanded && co.orders.map((o, oi) =>
+            /*#__PURE__*/React.createElement("div", { key: oi, style: { padding: '8px 12px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+              /*#__PURE__*/React.createElement("div", null,
+                /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 500 } }, o.neighborhood || o.item_desc || 'Entrega'),
+                /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)' } }, fmtDate(o.created_at))
+              ),
               /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: 'var(--blue)' } }, fmtMoney(o.price))
-            ))
-          ))
+            )
+          )
         );
       })
     );
@@ -10924,14 +10974,16 @@ function AdminFin({
   const [loading, setLoading] = useState(true);
   const [selWeek, setSelWeek] = useState(0); // 0=atual, -1=anterior
   const _nowAF = new Date();
-  const [histMonthA, setHistMonthA] = useState(_nowAF.getMonth() + 1);
-  const [histYearA, setHistYearA] = useState(_nowAF.getFullYear());
+  const _todayAF = _nowAF.getFullYear() + '-' + String(_nowAF.getMonth()+1).padStart(2,'0') + '-' + String(_nowAF.getDate()).padStart(2,'0');
+  const _weekAgoAF = (() => { const d = new Date(_nowAF); d.setDate(d.getDate()-6); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); })();
+  const [histFromA, setHistFromA] = useState(_weekAgoAF);
+  const [histToA, setHistToA] = useState(_todayAF);
   const [histClosings, setHistClosings] = useState([]);
   const [histLoadingA, setHistLoadingA] = useState(false);
-  const loadHistA = async (month, year) => {
+  const [histClientFilter, setHistClientFilter] = useState('');
+  const loadHistA = async (from, to) => {
+    if (!from || !to) return;
     setHistLoadingA(true);
-    const from = year + '-' + String(month).padStart(2,'0') + '-01';
-    const to = year + '-' + String(month).padStart(2,'0') + '-' + String(new Date(year, month, 0).getDate()).padStart(2,'0');
     const { data } = await db.from('daily_closings').select('*').gte('date', from).lte('date', to).order('date',{ascending:false});
     setHistClosings(data||[]);
     setHistLoadingA(false);
@@ -11485,17 +11537,36 @@ function AdminFin({
     }, "Pagar b\xF4nus ", fmtMoney(mu))));
   })), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
     style: { padding: '12px 14px 0' }
-  }, /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14 } },
-    /*#__PURE__*/React.createElement("select", { value: histMonthA, onChange: e => setHistMonthA(+e.target.value), style: { flex: 1, fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } },
-      ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'].map((m,i) => /*#__PURE__*/React.createElement("option", { key: i+1, value: i+1 }, m))),
-    /*#__PURE__*/React.createElement("select", { value: histYearA, onChange: e => setHistYearA(+e.target.value), style: { flex: 1, fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } },
-      Array.from({ length: 3 }, (_, i) => new Date().getFullYear() - i).map(y => /*#__PURE__*/React.createElement("option", { key: y, value: y }, y))),
-    /*#__PURE__*/React.createElement("button", { className: "btn-sm accept", onClick: () => loadHistA(histMonthA, histYearA) }, "Buscar")
+  }, /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' } },
+    /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 4 } }, "De"),
+      /*#__PURE__*/React.createElement("input", { type: "date", value: histFromA, onChange: e => setHistFromA(e.target.value),
+        style: { width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } })
+    ),
+    /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 4 } }, "At\xE9"),
+      /*#__PURE__*/React.createElement("input", { type: "date", value: histToA, onChange: e => setHistToA(e.target.value),
+        style: { width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' } })
+    ),
+    /*#__PURE__*/React.createElement("button", { className: "btn-sm accept", style: { alignSelf: 'flex-end', whiteSpace: 'nowrap' }, onClick: () => loadHistA(histFromA, histToA) }, "Buscar")
+  ), histClosings.length > 0 && /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
+    /*#__PURE__*/React.createElement("select", {
+      value: histClientFilter,
+      onChange: e => setHistClientFilter(e.target.value),
+      style: { width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 'var(--rs)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }
+    },
+      /*#__PURE__*/React.createElement("option", { value: '' }, "Todos os clientes"),
+      [...new Set(histClosings.map(cl => cl.client_id))].map(cid => {
+        const cl = histClosings.find(x => x.client_id === cid);
+        return /*#__PURE__*/React.createElement("option", { key: cid, value: cid }, cl.client_name || cid);
+      })
+    )
   ), histLoadingA ? /*#__PURE__*/React.createElement(Loading, null) : histClosings.length === 0 ? /*#__PURE__*/React.createElement("div", { className: "notice ni" }, "Clique em Buscar para carregar.") : (() => {
+    const filteredClosings = histClientFilter ? histClosings.filter(cl => cl.client_id === histClientFilter) : histClosings;
     const statusL = { matched: '\u2705 Confirmado', agreed: '\u2705 Acordado', pending: '\u23F3 Aguard. cliente', pending_l0: '\uD83D\uDC40 Aguard. aprova\xE7\xE3o', rejected_l0: '\u274C Devolvido', diverged: '\u26A0\uFE0F Diverg\xEAncia' };
     const statusC2 = { matched: 'var(--green)', agreed: 'var(--green)', pending: 'var(--amber)', pending_l0: 'var(--purple)', rejected_l0: 'var(--red)', diverged: 'var(--red)' };
     const wks = {};
-    histClosings.forEach(cl => { const wb=getWeekBoundsFromDate(cl.date); if (!wks[wb.startStr]) wks[wb.startStr]={startStr:wb.startStr,endStr:wb.endStr,closings:[]}; wks[wb.startStr].closings.push(cl); });
+    filteredClosings.forEach(cl => { const wb=getWeekBoundsFromDate(cl.date); if (!wks[wb.startStr]) wks[wb.startStr]={startStr:wb.startStr,endStr:wb.endStr,closings:[]}; wks[wb.startStr].closings.push(cl); });
     return Object.values(wks).sort((a,b)=>b.startStr.localeCompare(a.startStr)).map(wk => {
       const total = wk.closings.reduce((a,cl)=>a+(cl.courier_submission||[]).reduce((b,s)=>b+s.qty,0),0);
       const confQty = wk.closings.filter(cl=>cl.status==='matched'||cl.status==='agreed').reduce((a,cl)=>a+(cl.courier_submission||[]).reduce((b,s)=>b+s.qty,0),0);
