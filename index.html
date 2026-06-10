@@ -1431,6 +1431,7 @@ const getWeekBounds = (offset = 0) => {
     startStr: toStr(mon),
     endStr: toStr(sun)
   };
+};
 const getWeekBoundsFromDate = (dateStr) => {
   const [y, m, d] = dateStr.split('-').map(Number);
   const ref = new Date(y, m - 1, d);
@@ -1438,9 +1439,8 @@ const getWeekBoundsFromDate = (dateStr) => {
   const diff = day === 0 ? -6 : 1 - day;
   const mon = new Date(y, m - 1, d + diff);
   const sun = new Date(y, m - 1, d + diff + 6);
-  const toStr = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const toStr = x => x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
   return { startStr: toStr(mon), endStr: toStr(sun) };
-};
 };
 const genCode = name => name.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) + Math.random().toString(36).slice(2, 6).toUpperCase();
 
@@ -2147,6 +2147,7 @@ function AuthPage() {
   const [liShow, setLiShow] = useState(false);
   const [rgName, setRgName] = useState('');
   const [rgEmail, setRgEmail] = useState('');
+  const [rgPhone, setRgPhone] = useState('');
   const [rgPass, setRgPass] = useState('');
   const [rgPass2, setRgPass2] = useState('');
   const [rgVeh, setRgVeh] = useState('Moto');
@@ -2424,7 +2425,7 @@ function AuthPage() {
     className: "fgrp"
   }, /*#__PURE__*/React.createElement("label", {
     className: "flabel"
-  }, "Seu perfil"), /*#__PURE__*/React.createElement("div", {
+  }, "Seu perfil"), !new URLSearchParams(window.location.search).get('ref') && /*#__PURE__*/React.createElement("div", {
     className: "role-sel"
   }, [['client', '🛍️', 'Cliente'], ['courier', '🛵', 'Entregador']].map(([r, ic, lb]) => /*#__PURE__*/React.createElement("div", {
     key: r,
@@ -2733,6 +2734,11 @@ function ClientClosing({
   const [contesting, setContesting] = useState(null);
   const [contestQty, setContestQty] = useState({});
   const [contestDate, setContestDate] = useState('');
+  // Reconciliação (diverged)
+  const [divergedItems, setDivergedItems] = useState([]);
+  const [adjusting, setAdjusting] = useState(null);
+  const [adjustQty, setAdjustQty] = useState({});
+  const [adjustDate, setAdjustDate] = useState('');
   useEffect(() => {
     loadAll();
   }, [profile]);
@@ -2746,10 +2752,17 @@ function ClientClosing({
       ascending: false
     });
     setPending(pend || []);
+    // Divergências aguardando reconciliação
+    const {
+      data: divg
+    } = await db.from('daily_closings').select('*').eq('client_id', profile.id).eq('status', 'diverged').order('date', {
+      ascending: false
+    });
+    setDivergedItems(divg || []);
     // Histórico
     const {
       data: hist
-    } = await db.from('daily_closings').select('*').eq('client_id', profile.id).in('status', ['matched', 'diverged', 'agreed', 'disputed']).order('date', {
+    } = await db.from('daily_closings').select('*').eq('client_id', profile.id).in('status', ['matched', 'agreed', 'disputed']).order('date', {
       ascending: false
     }).limit(30);
     setMyClosings(hist || []);
@@ -2885,6 +2898,53 @@ function ClientClosing({
     setContestDate(closing.date);
     setContesting(closing);
   };
+  const startAdjust = closing => {
+    const qty = {};
+    (closing.client_submission || closing.courier_submission || []).forEach(s => {
+      qty[s.key] = s.qty;
+    });
+    setAdjustQty(qty);
+    setAdjustDate(closing.date);
+    setAdjusting(closing);
+  };
+  const submitAdjust = async () => {
+    if (!adjusting) return;
+    const keys = Object.keys({ ...(adjusting.courier_submission||[]).reduce((a,s)=>({...a,[s.key]:s}),{}), ...adjustQty });
+    const submission = keys.filter(k => +adjustQty[k] > 0).map(k => {
+      const orig = (adjusting.courier_submission||[]).find(x=>x.key===k) || (adjusting.client_submission||[]).find(x=>x.key===k);
+      return { key: k, label: (orig||{}).label||k, qty: +adjustQty[k] };
+    });
+    const cs = adjusting.courier_submission || [];
+    const courierTotal = cs.reduce((a,s) => a+s.qty, 0);
+    const clientTotal = submission.reduce((a,s) => a+s.qty, 0);
+    const match = courierTotal === clientTotal;
+    await db.from('daily_closings').update({
+      client_submission: submission,
+      status: match ? 'matched' : 'diverged',
+      ...(match && { agreed_data: submission }),
+      updated_at: localTimestamp()
+    }).eq('id', adjusting.id);
+    if (match) await createOrdersFromClosing(adjusting, submission);
+    toast(match ? '✅ Totais conferem! Fechamento confirmado.' : '⚠️ Ajuste enviado. Aguardando entregador revisar.');
+    setAdjusting(null); setAdjustQty({}); setAdjustDate('');
+    loadAll();
+  };
+  const agreeClosing = async cl => {
+    const finalData = cl.client_submission || cl.courier_submission || [];
+    await db.from('daily_closings').update({
+      agreed_data: finalData,
+      status: 'agreed',
+      updated_at: localTimestamp()
+    }).eq('id', cl.id);
+    await createOrdersFromClosing(cl, finalData);
+    toast('✅ Fechamento acordado! Entregas registradas com seu lançamento.');
+    loadAll();
+  };
+  const disputeClosing = async cl => {
+    await db.from('daily_closings').update({ status: 'disputed', updated_at: localTimestamp() }).eq('id', cl.id);
+    toast('🔴 Disputa aberta. O gestor será notificado.');
+    loadAll();
+  };
   const submitContest = async () => {
     if (!contesting) return;
     const submission = Object.entries(contestQty).filter(([, v]) => +v > 0).map(([k, v]) => {
@@ -2897,14 +2957,10 @@ function ClientClosing({
     });
     const cs = contesting.courier_submission || [];
     const dateChanged = contestDate !== contesting.date;
-    const qtyMatch = submission.every(s => {
-      const cf = cs.find(x => x.key === s.key);
-      return cf && cf.qty === s.qty;
-    }) && cs.every(s => {
-      const cl = submission.find(x => x.key === s.key);
-      return cl && cl.qty === s.qty;
-    });
-    const match = qtyMatch && !dateChanged;
+    // Comparação por TOTAL apenas (não por bairro)
+    const courierTotal = cs.reduce((a, s) => a + s.qty, 0);
+    const clientTotal = submission.reduce((a, s) => a + s.qty, 0);
+    const match = courierTotal === clientTotal && !dateChanged;
     await db.from('daily_closings').update({
       client_submission: submission,
       date: contestDate || contesting.date,
@@ -2986,7 +3042,7 @@ function ClientClosing({
   }, /*#__PURE__*/React.createElement("button", {
     style: ts('pending'),
     onClick: () => setTab('pending')
-  }, "Pendentes ", pending.length > 0 && /*#__PURE__*/React.createElement("span", {
+  }, "Pendentes ", (pending.length + divergedItems.length) > 0 && /*#__PURE__*/React.createElement("span", {
     style: {
       marginLeft: 4,
       background: 'var(--red)',
@@ -2996,10 +3052,49 @@ function ClientClosing({
       padding: '1px 6px',
       fontWeight: 700
     }
-  }, pending.length)), /*#__PURE__*/React.createElement("button", {
+  }, pending.length + divergedItems.length)), /*#__PURE__*/React.createElement("button", {
     style: ts('history'),
     onClick: () => setTab('history')
-  }, "Hist\xF3rico")), loading ? /*#__PURE__*/React.createElement(Loading, null) : /*#__PURE__*/React.createElement(React.Fragment, null, tab === 'pending' && /*#__PURE__*/React.createElement(React.Fragment, null, pending.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
+  }, "Hist\xF3rico")), loading ? /*#__PURE__*/React.createElement(Loading, null) : /*#__PURE__*/React.createElement(React.Fragment, null, tab === 'pending' && /*#__PURE__*/React.createElement(React.Fragment, null,
+    divergedItems.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", { style: { padding: '8px 14px 4px', fontSize: 12, fontWeight: 700, color: 'var(--red)' } }, "⚠️ Divergências aguardando acerto"),
+      divergedItems.map(cl => {
+        const courierTot = (cl.courier_submission||[]).reduce((a,x)=>a+x.qty,0);
+        const clientTot = (cl.client_submission||[]).reduce((a,x)=>a+x.qty,0);
+        return /*#__PURE__*/React.createElement("div", { key: cl.id, className: "ocard", style: { margin: '0 14px 8px', borderLeft: '3px solid var(--red)' } },
+          /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 } },
+            /*#__PURE__*/React.createElement("div", null,
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 700 } }, cl.courier_name, cl.courier_number ? ' #'+cl.courier_number : ''),
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)' } }, fmtDate(cl.date))
+            ),
+            /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 600, background: 'var(--red-l)', color: 'var(--red)' } }, "⚠️ Divergência")
+          ),
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: 'var(--red)', marginBottom: 10 } },
+            "Entregador: ", courierTot, " \xB7 Voc\xEA: ", clientTot, " entregas"
+          ),
+          adjusting && adjusting.id === cl.id
+            ? /*#__PURE__*/React.createElement("div", null,
+                /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 } }, "Seu lan\xE7amento (ajuste)"),
+                (cl.courier_submission||[]).map(s => /*#__PURE__*/React.createElement("div", { key: s.key, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+                  /*#__PURE__*/React.createElement("div", { style: { flex: 1, fontSize: 13 } }, s.label),
+                  /*#__PURE__*/React.createElement("button", { onClick: () => setAdjustQty(q=>({...q,[s.key]:Math.max(0,(q[s.key]||0)-1)})), style: { width:26,height:26,borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg2)',cursor:'pointer',fontSize:14 } }, "\u2212"),
+                  /*#__PURE__*/React.createElement("input", { type:"number",min:"0",value:adjustQty[s.key]||0,onChange:e=>setAdjustQty(q=>({...q,[s.key]:Math.max(0,parseInt(e.target.value)||0)})),style:{width:46,textAlign:'center',padding:'4px',fontSize:14,fontWeight:700} }),
+                  /*#__PURE__*/React.createElement("button", { onClick: () => setAdjustQty(q=>({...q,[s.key]:(q[s.key]||0)+1})), style: { width:26,height:26,borderRadius:'50%',border:'1px solid var(--blue-l)',background:'var(--blue-l)',cursor:'pointer',fontSize:14,color:'var(--blue)' } }, "+")
+                )),
+                /*#__PURE__*/React.createElement("div", { style: { display:'flex',gap:6,marginTop:10 } },
+                  /*#__PURE__*/React.createElement("button", { className:"btn-sm progress", style:{flex:1,padding:8}, onClick:submitAdjust }, "Enviar ajuste"),
+                  /*#__PURE__*/React.createElement("button", { className:"btn-sm", onClick:()=>setAdjusting(null) }, "Cancelar")
+                )
+              )
+            : /*#__PURE__*/React.createElement("div", { style: { display:'flex',gap:6,flexWrap:'wrap' } },
+                /*#__PURE__*/React.createElement("button", { className:"btn-sm", style:{flex:1,padding:'7px 6px',fontSize:12}, onClick:()=>startAdjust(cl) }, "\u270F\uFE0F Ajustar meu lan\xE7amento"),
+                /*#__PURE__*/React.createElement("button", { className:"btn-sm accept", style:{flex:1,padding:'7px 6px',fontSize:12}, onClick:()=>agreeClosing(cl) }, "\u2705 Confirmar assim mesmo"),
+                /*#__PURE__*/React.createElement("button", { className:"btn-sm danger", style:{padding:'7px 8px',fontSize:12}, onClick:()=>disputeClosing(cl) }, "\uD83D\uDD34 Escalar")
+              )
+        );
+      })
+    ),
+    pending.length === 0 && divergedItems.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
     icon: "\u2705",
     text: "Nenhum lan\xE7amento pendente. Os entregadores ainda n\xE3o enviaram o fechamento de hoje."
   }) : pending.map(cl => {
@@ -3268,13 +3363,31 @@ function ClientClosing({
         background: si.bg,
         color: si.color
       }
-    }, si.icon, " ", si.label)), cl.status === 'diverged' && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--red)',
-        marginTop: 6
-      }
-    }, "Entregador: ", (cl.courier_submission || []).reduce((a, x) => a + x.qty, 0), " \xB7 Voc\xEA: ", (cl.client_submission || []).reduce((a, x) => a + x.qty, 0), " entregas"));
+    }, si.icon, " ", si.label)), cl.status === 'diverged' && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--red)', marginTop: 6, marginBottom: 10 } },
+        "Entregador: ", (cl.courier_submission || []).reduce((a, x) => a + x.qty, 0),
+        " · Você: ", (cl.client_submission || []).reduce((a, x) => a + x.qty, 0), " entregas"
+      ),
+      adjusting && adjusting.id === cl.id
+        ? /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 } }, "Seu lançamento (ajuste)"),
+            (adjusting.courier_submission || []).map(s => /*#__PURE__*/React.createElement("div", { key: s.key, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+              /*#__PURE__*/React.createElement("div", { style: { flex: 1, fontSize: 13 } }, s.label),
+              /*#__PURE__*/React.createElement("button", { onClick: () => setAdjustQty(q => ({ ...q, [s.key]: Math.max(0, (q[s.key]||0) - 1) })), style: { width: 26, height: 26, borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--bg2)', cursor: 'pointer', fontSize: 14 } }, "−"),
+              /*#__PURE__*/React.createElement("input", { type: "number", min: "0", value: adjustQty[s.key]||0, onChange: e => setAdjustQty(q => ({ ...q, [s.key]: Math.max(0, parseInt(e.target.value)||0) })), style: { width: 46, textAlign: 'center', padding: '4px', fontSize: 14, fontWeight: 700 } }),
+              /*#__PURE__*/React.createElement("button", { onClick: () => setAdjustQty(q => ({ ...q, [s.key]: (q[s.key]||0) + 1 })), style: { width: 26, height: 26, borderRadius: '50%', border: '1px solid var(--blue-l)', background: 'var(--blue-l)', cursor: 'pointer', fontSize: 14, color: 'var(--blue)' } }, "+")
+            )),
+            /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 6, marginTop: 10 } },
+              /*#__PURE__*/React.createElement("button", { className: "btn-sm progress", style: { flex: 1, padding: 8 }, onClick: submitAdjust }, "Enviar ajuste"),
+              /*#__PURE__*/React.createElement("button", { className: "btn-sm", onClick: () => setAdjusting(null) }, "Cancelar")
+            )
+          )
+        : /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+            /*#__PURE__*/React.createElement("button", { className: "btn-sm", style: { flex: 1, padding: '7px 6px', fontSize: 12 }, onClick: () => startAdjust(cl) }, "✏️ Ajustar meu lançamento"),
+            /*#__PURE__*/React.createElement("button", { className: "btn-sm accept", style: { flex: 1, padding: '7px 6px', fontSize: 12 }, onClick: () => agreeClosing(cl) }, "✅ Confirmar assim mesmo"),
+            /*#__PURE__*/React.createElement("button", { className: "btn-sm danger", style: { padding: '7px 8px', fontSize: 12 }, onClick: () => disputeClosing(cl) }, "🔴 Escalar")
+          )
+    ));
   })))));
 }
 
@@ -3284,17 +3397,32 @@ function ClientClosing({
 function ApproveTab({ loadAll, profile }) {
   const toast = useToast();
   const [pending, setPending] = useState([]);
+  const [diverged, setDiverged] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [editQty, setEditQty] = useState({});
+  const [editingDiverg, setEditingDiverg] = useState(null);
+  const [editDivergQty, setEditDivergQty] = useState({});
 
   const loadPending = useCallback(async () => {
     if (!profile) return;
-    const { data: network } = await db.from('users').select('id,name,courier_number').eq('referred_by', profile.id).eq('role', 'courier');
-    const networkIds = (network || []).map(u => u.id);
-    if (!networkIds.length) { setLoading(false); return; }
-    const { data } = await db.from('daily_closings').select('*').in('courier_id', networkIds).eq('status', 'pending_l0').order('date', { ascending: false });
-    setPending(data || []);
+    // Buscar N1 diretos
+    const { data: directTeam } = await db.from('users').select('id,name,courier_number,referred_by').eq('role', 'courier').eq('referred_by', profile.id);
+    const n1Ids = (directTeam || []).map(u => u.id);
+    // Buscar N2 (indicados dos N1)
+    let n2Ids = [];
+    if (n1Ids.length) {
+      const { data: n2Team } = await db.from('users').select('id').eq('role', 'courier').in('referred_by', n1Ids);
+      n2Ids = (n2Team || []).map(u => u.id);
+    }
+    // Incluir o próprio N0 + N1 + N2
+    const allIds = [profile.id, ...n1Ids, ...n2Ids];
+    const [pendRes, divgRes] = await Promise.all([
+      db.from('daily_closings').select('*').in('courier_id', allIds).eq('status', 'pending_l0').order('date', { ascending: false }),
+      db.from('daily_closings').select('*').in('courier_id', allIds).eq('status', 'diverged').order('date', { ascending: false })
+    ]);
+    setPending(pendRes.data || []);
+    setDiverged(divgRes.data || []);
     setLoading(false);
   }, [profile]);
 
@@ -3334,11 +3462,78 @@ function ApproveTab({ loadAll, profile }) {
     loadPending(); if (loadAll) loadAll();
   };
 
+  const startEditDiverg = (cl) => {
+    const qty = {};
+    (cl.courier_submission || []).forEach(s => { qty[s.key] = s.qty; });
+    setEditDivergQty(qty);
+    setEditingDiverg(cl.id);
+  };
+
+  const saveEditDiverg = async (cl) => {
+    const submission = (cl.courier_submission || []).map(s => ({ ...s, qty: +editDivergQty[s.key] || 0 })).filter(s => s.qty > 0);
+    const clientTotal = (cl.client_submission || []).reduce((a, s) => a + s.qty, 0);
+    const courierTotal = submission.reduce((a, s) => a + s.qty, 0);
+    const match = courierTotal === clientTotal;
+    await db.from('daily_closings').update({
+      courier_submission: submission,
+      status: match ? 'matched' : 'diverged',
+      ...(match && { agreed_data: submission }),
+      updated_at: localTimestamp()
+    }).eq('id', cl.id);
+    if (match) {
+      // Criar orders se bateu
+      const { data: closingFull } = await db.from('daily_closings').select('*').eq('id', cl.id).single();
+      // Reutilizar createOrdersFromClosing não está acessível aqui, toast informativo
+      toast('✅ Totais conferem! Fechamento confirmado. As entregas serão registradas automaticamente.');
+    } else {
+      toast('⚠️ Atualizado. Cliente ainda precisa confirmar.');
+    }
+    setEditingDiverg(null);
+    loadPending(); if (loadAll) loadAll();
+  };
+
   if (loading) return React.createElement(Loading);
 
   return React.createElement('div', { style: { padding: '10px 14px 0' } },
+    diverged.length > 0 && React.createElement(React.Fragment, null,
+      React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: 'var(--red)', marginBottom: 6 } }, '⚠️ Divergências — ajuste seus números'),
+      diverged.map(cl => {
+        const isEditingD = editingDiverg === cl.id;
+        const sub = cl.courier_submission || [];
+        const courierTot = sub.reduce((a, s) => a + s.qty, 0);
+        const clientTot = (cl.client_submission || []).reduce((a, s) => a + s.qty, 0);
+        return React.createElement('div', { key: cl.id, className: 'ocard', style: { margin: '0 0 10px', borderLeft: '3px solid var(--red)' } },
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 } },
+            React.createElement('div', null,
+              React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, '🛵 ' + cl.courier_name + (cl.courier_number ? ' #' + cl.courier_number : '')),
+              React.createElement('div', { style: { fontSize: 11, color: 'var(--text2)' } }, fmtDate(cl.date) + ' · ' + cl.client_name)
+            ),
+            React.createElement('span', { style: { fontSize: 10, padding: '2px 8px', borderRadius: 20, background: 'var(--red-l)', color: 'var(--red)', fontWeight: 600 } }, '⚠️ Divergência')
+          ),
+          React.createElement('div', { style: { fontSize: 12, color: 'var(--red)', marginBottom: 8 } },
+            'Seu lançamento: ' + courierTot + ' · Cliente lançou: ' + clientTot + ' entregas'
+          ),
+          isEditingD
+            ? React.createElement('div', null,
+                React.createElement('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 6, fontWeight: 600 } }, 'AJUSTAR QUANTIDADES'),
+                sub.map(s => React.createElement('div', { key: s.key, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+                  React.createElement('div', { style: { flex: 1, fontSize: 12 } }, s.label),
+                  React.createElement('button', { onClick: () => setEditDivergQty(q => ({ ...q, [s.key]: Math.max(0, (q[s.key] || 0) - 1) })), style: { width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--bg2)', cursor: 'pointer', fontSize: 14 } }, '−'),
+                  React.createElement('span', { style: { width: 28, textAlign: 'center', fontSize: 14, fontWeight: 700 } }, editDivergQty[s.key] || 0),
+                  React.createElement('button', { onClick: () => setEditDivergQty(q => ({ ...q, [s.key]: (q[s.key] || 0) + 1 })), style: { width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--blue-l)', background: 'var(--blue-l)', cursor: 'pointer', fontSize: 14, color: 'var(--blue)' } }, '+')
+                )),
+                React.createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8 } },
+                  React.createElement('button', { className: 'btn-sm accept', style: { flex: 1, padding: 8 }, onClick: () => saveEditDiverg(cl) }, '✅ Salvar ajuste'),
+                  React.createElement('button', { className: 'btn-sm', onClick: () => setEditingDiverg(null) }, 'Cancelar')
+                )
+              )
+            : React.createElement('button', { className: 'btn-sm progress', style: { width: '100%', padding: 8 }, onClick: () => startEditDiverg(cl) }, '✏️ Ajustar meu lançamento')
+        );
+      }),
+      React.createElement('div', { style: { height: 1, background: 'var(--border)', margin: '4px 0 12px' } })
+    ),
     pending.length === 0
-      ? React.createElement('div', { className: 'notice ni' }, '✅ Nenhum lançamento aguardando aprovação.')
+      ? React.createElement('div', { className: 'notice ni' }, diverged.length > 0 ? '✅ Nenhum novo lançamento aguardando aprovação.' : '✅ Nenhum lançamento aguardando aprovação.')
       : pending.map(cl => {
           const sub = cl.courier_submission || [];
           const total = sub.reduce((a, s) => a + s.qty, 0);
@@ -3404,6 +3599,8 @@ function CourierFin({
   const [date, setDate] = useState(localDateStr());
   const [submitting, setSubmitting] = useState(false);
   const [launchDay, setLaunchDay] = useState(null); // date string
+  const [launchFor, setLaunchFor] = useState('self');
+  const [myCouriers, setMyCouriers] = useState([]);
   const _nowCF = new Date();
   const [histMonth, setHistMonth] = useState(_nowCF.getMonth() + 1);
   const [histYear, setHistYear] = useState(_nowCF.getFullYear());
@@ -3413,6 +3610,13 @@ function CourierFin({
     const wC = getWeekBounds(0);
     const wP = getWeekBounds(-1);
     const from = wP.startStr;
+    // Buscar indicados (só para N0)
+    if (!profile.referred_by) {
+      const { data: teamData } = await db.from('users').select('id,name,courier_number,referred_by').eq('role','courier').neq('id', profile.id);
+      const direct = (teamData||[]).filter(c => c.referred_by === profile.id);
+      const indirect = (teamData||[]).filter(c => direct.find(n => n.id === c.referred_by));
+      setMyCouriers([...direct, ...indirect]);
+    }
     const [ordRes, closRes, cliRes, payRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }), db.from('daily_closings').select('*').eq('courier_id', profile.id).gte('date', (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-01'; })()).order('date', {
@@ -3493,6 +3697,7 @@ function CourierFin({
     setPriceItems(items);
   };
   const submitClosing = async () => {
+    try {
     if (!selClient || !date) {
       toast('Selecione cliente e data');
       return;
@@ -3512,13 +3717,14 @@ function CourierFin({
         qty: +v
       };
     });
+    const targetIdForEx = (launchFor !== 'self' && myCouriers.find(c => c.id === launchFor)) ? launchFor : profile.id;
     const {
       data: ex
-    } = await db.from('daily_closings').select('id').eq('courier_id', profile.id).eq('client_id', selClient).eq('date', date).maybeSingle();
+    } = await db.from('daily_closings').select('id').eq('courier_id', targetIdForEx).eq('client_id', selClient).eq('date', date).maybeSingle();
     // Nível 0 (referred_by = null) vai direto para cliente
     // Nível 1 e 2 passam pela aprovação do Nível 0 primeiro
     const isLevel0 = !profile.referred_by;
-    const targetCourier = launchFor !== 'self' ? couriers.find(c => c.id === launchFor) : null;
+    const targetCourier = launchFor !== 'self' ? myCouriers.find(c => c.id === launchFor) : null;
     const payload = {
       courier_id: targetCourier ? targetCourier.id : profile.id,
       courier_name: targetCourier ? targetCourier.name : profile.name,
@@ -3527,7 +3733,8 @@ function CourierFin({
       client_name: (client === null || client === void 0 ? void 0 : client.name) || '',
       date,
       courier_submission: submission,
-      status: (isLevel0 || targetCourier) ? 'pending' : 'pending_l0',
+      status: 'pending_l0',
+      created_at: localTimestamp(),
       updated_at: localTimestamp()
     };
     let dbError = null;
@@ -3535,21 +3742,37 @@ function CourierFin({
       const { error } = await db.from('daily_closings').update(payload).eq('id', ex.id);
       dbError = error;
     } else {
-      const { error } = await db.from('daily_closings').insert(payload);
-      dbError = error;
+      const { error: insertError } = await db.from('daily_closings').insert(payload);
+      if (insertError && (insertError.message?.includes('violate') || insertError.code === '23505')) {
+        // Constraint violation — registro já existe, buscar e atualizar
+        const { data: existing } = await db.from('daily_closings').select('id')
+          .eq('courier_id', targetIdForEx).eq('client_id', selClient).eq('date', date).maybeSingle();
+        if (existing) {
+          const { error: updateError } = await db.from('daily_closings').update(payload).eq('id', existing.id);
+          dbError = updateError;
+        } else {
+          dbError = insertError;
+        }
+      } else {
+        dbError = insertError;
+      }
     }
     setSubmitting(false);
     if (dbError) {
       toast('Erro ao salvar: ' + (dbError.message || JSON.stringify(dbError)));
       return;
     }
-    toast(isLevel0 ? 'Lançamento enviado! Cliente irá confirmar. 📋' : 'Lançamento enviado! Aguardando aprovação do responsável. 📋');
+    toast('Lançamento enviado! Aguardando aprovação. 📋');
     setSelClient('');
     setQuantities({});
     setPriceItems([]);
     setLaunchDay(null);
     setLaunchFor('self');
     loadAll();
+    } catch(e) {
+      setSubmitting(false);
+      toast('Erro inesperado: ' + (e.message || String(e)));
+    }
   };
   const copy = link => {
     navigator.clipboard.writeText(link).then(() => toast('Link copiado! ✓')).catch(() => toast('Copie: ' + link));
@@ -3931,14 +4154,14 @@ function CourierFin({
         padding: '10px 12px',
         borderTop: '1px solid var(--border)'
       }
-    }, !profile.referred_by && myTeam.length > 0 && /*#__PURE__*/React.createElement("div", { style: { marginBottom: 8 } },
+    }, !profile.referred_by && myCouriers.length > 0 && /*#__PURE__*/React.createElement("div", { style: { marginBottom: 8 } },
       /*#__PURE__*/React.createElement("label", { className: "flabel" }, "Lan\xE7ar por"),
       /*#__PURE__*/React.createElement("select", {
         value: launchFor,
         onChange: e => setLaunchFor(e.target.value)
       },
         /*#__PURE__*/React.createElement("option", { value: "self" }, "\uD83D\uDEF5 Eu mesmo (" + profile.name + ")"),
-        myTeam.map(c => /*#__PURE__*/React.createElement("option", { key: c.id, value: c.id }, "\uD83D\uDEF5 ", c.name, c.courier_number ? ' #'+c.courier_number : ''))
+        myCouriers.map(c => /*#__PURE__*/React.createElement("option", { key: c.id, value: c.id }, "\uD83D\uDEF5 ", c.name, c.courier_number ? ' #'+c.courier_number : ''))
       )
     ), /*#__PURE__*/React.createElement("div", {
       style: {
@@ -9167,14 +9390,22 @@ function AdminMap({
     mapObj = useRef(null),
     markers = useRef({});
   const load = useCallback(async () => {
-    const [cr, or] = await Promise.all([db.from('users').select('id,name,lat,lng,is_online,vehicle,plate,location_updated_at').eq('role', 'courier'), db.from('orders').select('id,courier_id,status,delivery_addr,neighborhood').in('status', ['accepted', 'collecting', 'delivering'])]);
+    const [cr, or] = await Promise.all([db.from('users').select('id,name,latitude,longitude,is_online,vehicle,plate,courier_number,location_updated_at').eq('role', 'courier'), db.from('orders').select('id,courier_id,status,delivery_addr,neighborhood').in('status', ['accepted', 'collecting', 'delivering'])]);
     setCouriers(cr.data || []);
     setOrders(or.data || []);
   }, []);
   useEffect(() => {
     load();
-    const t = setInterval(load, 10000);
-    return () => clearInterval(t);
+    // Atualiza a cada 15s como fallback
+    const t = setInterval(load, 15000);
+    // Realtime: atualiza marcadores quando lat/lng mudar
+    const sub = db.channel('admin-map-rt')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: 'role=eq.courier' }, payload => {
+        const u = payload.new;
+        setCouriers(prev => prev.map(c => c.id === u.id ? { ...c, ...u } : c));
+      })
+      .subscribe();
+    return () => { clearInterval(t); db.removeChannel(sub); };
   }, [load]);
   useEffect(() => {
     const L = window.L;
@@ -9190,11 +9421,11 @@ function AdminMap({
     const map = mapObj.current;
     const seen = new Set();
     couriers.forEach(c => {
-      if (!c.lat || !c.lng) return;
+      if (!c.latitude || !c.longitude) return;
       seen.add(c.id);
       const activeOrder = orders.find(o => o.courier_id === c.id);
       const color = c.is_online ? activeOrder ? '#3B6D11' : '#185FA5' : '#888';
-      const label = activeOrder ? `🛵 ${c.name}<br><small>Entregando: ${activeOrder.neighborhood || activeOrder.delivery_addr}</small>` : `🛵 ${c.name}<br><small>${c.is_online ? 'Online — aguardando' : 'Offline'}</small>`;
+      const num = c.courier_number ? ` #${c.courier_number}` : ''; const label = activeOrder ? `🛵 <strong>${c.name}${num}</strong><br><small>🚚 Entregando: ${activeOrder.neighborhood || activeOrder.delivery_addr || ''}</small>` : `🛵 <strong>${c.name}${num}</strong><br><small>${c.is_online ? '🟢 Online — aguardando' : '⚫ Offline'}</small>`;
       const html = `<div style="background:${color};width:38px;height:38px;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,.35);cursor:pointer;">🛵</div>`;
       const icon = L.divIcon({
         html,
@@ -9203,9 +9434,9 @@ function AdminMap({
         className: ''
       });
       if (markers.current[c.id]) {
-        markers.current[c.id].setLatLng([c.lat, c.lng]).setIcon(icon).setPopupContent(`<strong>${label}</strong>`);
+        markers.current[c.id].setLatLng([c.latitude, c.longitude]).setIcon(icon).setPopupContent(`<strong>${label}</strong>`);
       } else {
-        markers.current[c.id] = L.marker([c.lat, c.lng], {
+        markers.current[c.id] = L.marker([c.latitude, c.longitude], {
           icon
         }).addTo(map).bindPopup(`<strong>${label}</strong>`);
       }
@@ -9218,8 +9449,8 @@ function AdminMap({
       }
     });
   }, [couriers, orders]);
-  const online = couriers.filter(c => c.is_online && c.lat);
-  const offline = couriers.filter(c => !c.is_online || !c.lat);
+  const online = couriers.filter(c => c.is_online && c.latitude);
+  const offline = couriers.filter(c => !c.is_online || !c.latitude);
   const active = couriers.filter(c => orders.find(o => o.courier_id === c.id));
   return /*#__PURE__*/React.createElement(AdminShell, {
     page: "admin-map",
