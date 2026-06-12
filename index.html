@@ -11196,6 +11196,61 @@ function AdminRelatorio({
             ))
     )));
 }
+// ===== RELATÓRIO FINANCEIRO ADMIN =====
+function RelatorioFinAdmin() {
+  var toast = useToast();
+  var _rfa0 = React.useState(false), loading = _rfa0[0], setLoading = _rfa0[1];
+  var _rfa1 = React.useState(null), rows = _rfa1[0], setRows = _rfa1[1];
+  var hoje = new Date().toISOString().slice(0,10);
+  var primeiroDiaMes = hoje.slice(0,8)+'01';
+  var _rfa2 = React.useState(primeiroDiaMes), dateFrom = _rfa2[0], setDateFrom = _rfa2[1];
+  var _rfa3 = React.useState(hoje), dateTo = _rfa3[0], setDateTo = _rfa3[1];
+  var loadRel = async function() {
+    setLoading(true);
+    var _r = await db.rpc('get_financial_report', {p_start: dateFrom, p_end: dateTo});
+    if (_r.error) { toast('Erro: ' + _r.error.message); setLoading(false); return; }
+    setRows(_r.data || []);
+    setLoading(false);
+  };
+  var appRows = rows ? rows.filter(function(r){ return r.source_type === 'order'; }) : [];
+  var closingRows = rows ? rows.filter(function(r){ return r.source_type === 'closing'; }) : [];
+  var referralRows = rows ? rows.filter(function(r){ return r.source_type === 'referral'; }) : [];
+  var sumF = function(arr, key) { return arr.reduce(function(a, r){ return a + (r[key] ? +r[key] : 0); }, 0); };
+  var totalClient = rows ? sumF(rows.filter(function(r){ return r.source_type !== 'referral'; }), 'total_client') : 0;
+  var totalCourier = rows ? sumF(rows, 'total_courier') : 0;
+  var totalGestora = rows ? sumF(rows.filter(function(r){ return r.source_type !== 'referral'; }), 'total_gestora') : 0;
+  var totalEntregas = appRows.length + closingRows.reduce(function(a, r){ return a + (r.qty || 0); }, 0);
+  return /*#__PURE__*/React.createElement("div", {style: {padding: '14px 14px 0'}},
+    /*#__PURE__*/React.createElement("div", {style: {display: 'flex', gap: 8, marginBottom: 14, alignItems: 'flex-end'}},
+      /*#__PURE__*/React.createElement("div", {style: {flex: 1}}, /*#__PURE__*/React.createElement("label", {className: "flabel"}, "De"), /*#__PURE__*/React.createElement("input", {type: "date", value: dateFrom, onChange: function(e){ setDateFrom(e.target.value); }})),
+      /*#__PURE__*/React.createElement("div", {style: {flex: 1}}, /*#__PURE__*/React.createElement("label", {className: "flabel"}, "Até"), /*#__PURE__*/React.createElement("input", {type: "date", value: dateTo, onChange: function(e){ setDateTo(e.target.value); }})),
+      /*#__PURE__*/React.createElement("button", {className: "btn-sm accept", style: {height: 38, padding: '0 16px', marginBottom: 1, whiteSpace: 'nowrap'}, onClick: loadRel, disabled: loading}, loading ? '...' : 'Buscar')
+    ),
+    rows && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", {style: {display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6}},
+        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--blue)'}}, fmtMoney(totalClient)), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "total clientes")),
+        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--green)'}}, fmtMoney(totalCourier)), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "total entregadores")),
+        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--amber)'}}, fmtMoney(totalGestora)), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "margem gestora")),
+        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval"}, totalEntregas), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "entregas"))
+      ),
+      rows.length === 0 && /*#__PURE__*/React.createElement("div", {className: "notice ni", style: {margin: '8px 0'}}, "Nenhum registro no período."),
+      appRows.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null,
+        /*#__PURE__*/React.createElement("div", {className: "stitle", style: {padding: '14px 0 6px'}}, "📱 Pedidos App (", appRows.length, ")"),
+        appRows.map(function(r, i){ return /*#__PURE__*/React.createElement("div", {key: i, style: {display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)'}}, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {style: {fontSize: 12, fontWeight: 600}}, r.courier_name, " → ", r.neighborhood || '—'), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--text2)'}}, r.client_name, " · ", fmtDate(r.delivery_date))), /*#__PURE__*/React.createElement("div", {style: {textAlign: 'right'}}, /*#__PURE__*/React.createElement("div", {style: {fontSize: 13, fontWeight: 700, color: 'var(--blue)'}}, fmtMoney(r.total_client)), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--green)'}}, fmtMoney(r.total_courier)))); })
+      ),
+      closingRows.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null,
+        /*#__PURE__*/React.createElement("div", {className: "stitle", style: {padding: '14px 0 6px'}}, "📋 Lançamentos (", closingRows.length, " linhas)"),
+        closingRows.map(function(r, i){ return /*#__PURE__*/React.createElement("div", {key: i, style: {display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)'}}, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {style: {fontSize: 12, fontWeight: 600}}, r.courier_name, " · ", r.neighborhood), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--text2)'}}, r.client_name, " · ", fmtDate(r.delivery_date), " · ", r.qty, " entrega", r.qty !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {style: {textAlign: 'right'}}, /*#__PURE__*/React.createElement("div", {style: {fontSize: 13, fontWeight: 700, color: 'var(--blue)'}}, fmtMoney(r.total_client)), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--green)'}}, fmtMoney(r.total_courier)))); })
+      ),
+      referralRows.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null,
+        /*#__PURE__*/React.createElement("div", {className: "stitle", style: {padding: '14px 0 6px'}}, "🌐 Repasses de rede (", referralRows.length, ")"),
+        referralRows.map(function(r, i){ return /*#__PURE__*/React.createElement("div", {key: i, style: {display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)'}}, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {style: {fontSize: 12, fontWeight: 600}}, r.courier_name), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--text2)'}}, r.neighborhood, " · sem. ", fmtDate(r.delivery_date))), /*#__PURE__*/React.createElement("div", {style: {fontSize: 13, fontWeight: 700, color: 'var(--green)'}}, fmtMoney(r.total_courier))); })
+      )
+    ),
+    !rows && !loading && /*#__PURE__*/React.createElement("div", {className: "notice ni", style: {marginTop: 4}}, "Selecione o período e clique em Buscar.")
+  );
+}
+
 function AdminFin({
   setPage
 }) {
@@ -11539,7 +11594,7 @@ function AdminFin({
   }, "\uD83D\uDD17 Indica\xE7\xF5es"), /*#__PURE__*/React.createElement("button", {
     style: ts('historico'),
     onClick: () => setTab('historico')
-  }, "\uD83D\uDCCB Hist\xF3rico")), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCCB Hist\xF3rico"), /*#__PURE__*/React.createElement("button", {style: ts('relatorio'), onClick: () => setTab('relatorio')}, "Relatório")), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '12px 14px 0'
     }
@@ -11766,7 +11821,7 @@ function AdminFin({
       className: "btn-sm progress",
       onClick: () => payBonuses(co.id, co.name, mu)
     }, "Pagar b\xF4nus ", fmtMoney(mu))));
-  })), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
+  })), tab === 'relatorio' && /*#__PURE__*/React.createElement(RelatorioFinAdmin, null), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
     style: { padding: '12px 14px 0' }
   }, /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' } },
     /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
