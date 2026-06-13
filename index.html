@@ -3880,7 +3880,7 @@ function CourierFin({
   }, "\uD83D\uDD17 Indica\xE7\xE3o"), /*#__PURE__*/React.createElement("button", {
     style: ts('historico'),
     onClick: () => setTab('historico')
-  }, "\uD83D\uDCC5 Hist\xF3rico")), tab === 'approve' && !profile.referred_by && React.createElement(ApproveTab, {loadAll: loadAll, profile: profile}), tab === 'week' && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCC5 Hist\xF3rico"), !profile.referred_by && /*#__PURE__*/React.createElement("button", {style: ts('approve'), onClick: () => setTab('approve')}, "\u2705 Aprovar")), tab === 'approve' && !profile.referred_by && React.createElement(ApproveTab, {loadAll: loadAll, profile: profile}), tab === 'week' && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '14px 14px 0'
     }
