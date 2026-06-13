@@ -2788,6 +2788,17 @@ function ClientClosing({
     agreed: '✅ Resolvido'
   })[s] || s;
 
+  const ts = t => ({
+    padding: '6px 16px',
+    borderRadius: 20,
+    border: 'none',
+    background: tab === t ? 'var(--blue)' : 'var(--bg2)',
+    color: tab === t ? '#fff' : 'var(--text)',
+    cursor: 'pointer',
+    fontWeight: tab === t ? 700 : 400,
+    fontSize: 14
+  });
+
   return /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 500,
