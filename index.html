@@ -2736,7 +2736,7 @@ function ClientClosing({
 
   const loadSummaries = async () => {
     setLoading(true);
-    const statuses = tab === 'pending' ? ['awaiting_client'] : ['matched', 'diverged', 'agreed'];
+    const statuses = tab === 'pending' ? ['pending'] : ['matched', 'diverged', 'agreed'];
     const r = await db.from('daily_summaries').select('*').eq('client_id', profile.id).in('status', statuses).order('date', {
       ascending: false
     });
@@ -2782,7 +2782,7 @@ function ClientClosing({
   };
 
   const statusLabel = s => ({
-    awaiting_client: '⏳ Aguardando confirma\xe7\xe3o',
+    pending: '⏳ Aguardando confirma\xe7\xe3o',
     matched: '✅ Confirmado',
     diverged: '⚠️ Diverg\xeancia',
     agreed: '✅ Resolvido'
@@ -2938,7 +2938,9 @@ function ClientClosing({
         setContesting(null);
         setContestQty('');
       }
-    }, "Cancelar"))) : null
+    }, "Cancelar"))) : null);
+  })));
+}
 function ApproveTab({
   loadAll,
   profile
@@ -3083,60 +3085,7 @@ function ApproveTab({
     )
   );
 }
-ion: 'column', gap: 6, marginBottom: 12 } },
-                ...g.closings.map(cl => {
-                  const q = (cl.courier_submission || []).reduce((s, it) => s + (it.qty || 0), 0);
-                  return /*#__PURE__*/React.createElement("div", { key: cl.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' } },
-                    /*#__PURE__*/React.createElement("span", {}, cl.courier_name || 'Entregador'),
-                    /*#__PURE__*/React.createElement("span", { style: { fontWeight: 600 } }, q + ' entregas')
-                  );
-                })
-              ),
-              /*#__PURE__*/React.createElement("button", {
-                onClick: () => fecharDia(g.date, g.client_id),
-                disabled: isClosing,
-                style: { width: '100%', padding: '10px', background: isClosing ? 'var(--bg3)' : 'var(--blue)', color: '#fff', border: 'none', borderRadius: 8, cursor: isClosing ? 'default' : 'pointer', fontWeight: 700, fontSize: 15 }
-              }, isClosing ? '⌛ Fechando...' : '⚡ Fechar Dia')
-            );
-          })
-        )
-    ),
 
-    tab === 'history' && (histGroups.length === 0
-      ? /*#__PURE__*/React.createElement("div", { style: { color: 'var(--text2)', textAlign: 'center', padding: 40 } }, 'Nenhum registro encontrado')
-      : /*#__PURE__*/React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-          ...histGroups.map(g => {
-            const qty = totalQty(g.closings);
-            return /*#__PURE__*/React.createElement("div", { key: g.date + '_' + g.courier_id, style: { background: 'var(--bg2)', borderRadius: 10, padding: 14 } },
-              /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 8 } },
-                /*#__PURE__*/React.createElement("div", {},
-                  /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700 } }, g.courier_name || 'Entregador'),
-                  /*#__PURE__*/React.createElement("div", { style: { color: 'var(--text2)', fontSize: 13 } }, fmt(g.date))
-                ),
-                /*#__PURE__*/React.createElement("div", { style: { textAlign: 'right' } },
-                  /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, qty + ' entregas'),
-                  /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: 'var(--text2)' } }, g.closings.length + ' cliente(s)')
-                )
-              ),
-              /*#__PURE__*/React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-                ...g.closings.map(cl => {
-                  const q = (cl.courier_submission || []).reduce((s, it) => s + (it.qty || 0), 0);
-                  return /*#__PURE__*/React.createElement("div", { key: cl.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', borderTop: '1px solid var(--border)' } },
-                    /*#__PURE__*/React.createElement("span", {}, cl.client_name || 'Cliente'),
-                    /*#__PURE__*/React.createElement("span", { style: { color: 'var(--text2)', fontSize: 12 } }, statusLabel(cl.status)),
-                    /*#__PURE__*/React.createElement("span", { style: { fontWeight: 600 } }, q + ' entregas')
-                  );
-                })
-              )
-            );
-          })
-        )
-    )
-  );
-}
-s")));
-  }));
-}
 function CourierFin({
   setPage
 }) {
@@ -5463,42 +5412,7 @@ function AdminSettings({
       _changed: false
     })));
   };
-  const saveDefaultPrices = async () => {
-  setSaving(true);
-  try {
-    const { data: defTable } = await db.from('price_tables').select('id').is('client_id', null).maybeSingle();
-    let tableId = defTable ? defTable.id : null;
-    if (!tableId) {
-      const { data: nt } = await db.from('price_tables').insert({ name: 'Padrao' }).select().single();
-      tableId = nt.id;
-    }
-    await db.from('price_items').delete().eq('price_table_id', tableId);
-    const items = bairros.map(b => ({
-      price_table_id: tableId,
-      neighborhood_key: b.key,
-      neighborhood_label: b.label,
-      client_price: +(b.cliente || 0),
-      courier_price: +(b.entregador || 0)
-    }));
-    const { error } = await db.from('price_items').insert(items);
-    if (error) throw error;
-    toast('success', 'Tabela salva com sucesso!');
-  } catch (e) { toast('error', 'Erro: ' + e.message); }
-  setSaving(false);
-};
-const exportPricesCSV = () => {
-  const hdr = ['Bairro', 'Preco Cliente (R$)', 'Preco Entregador (R$)'].join(',');
-  const rows = bairros.map(b => ['"' + (b.label || b.key) + '"', +(b.cliente || 0), +(b.entregador || 0)].join(','));
-  const csv = [hdr, ...rows].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const anchor = Object.assign(document.createElement('a'), { href: url, download: 'tabela_precos.csv' });
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
-};
-const saveClientPrices = async () => {
+  const saveClientPrices = async () => {
     if (!selClient) {
       toast('Selecione um cliente');
       return;
@@ -5561,6 +5475,42 @@ const saveClientPrices = async () => {
     badge: "Admin",
     badgeClass: "ba"
   }), /*#__PURE__*/React.createElement(Loading, null));
+  const saveDefaultPrices = async () => {
+    setSaving(true);
+    try {
+      const { data: defTable } = await db.from('price_tables').select('id').is('client_id', null).maybeSingle();
+      let tableId = defTable ? defTable.id : null;
+      if (!tableId) {
+        const { data: nt } = await db.from('price_tables').insert({ name: 'Padrao' }).select().single();
+        tableId = nt.id;
+      }
+      await db.from('price_items').delete().eq('price_table_id', tableId);
+      const items = bairros.map(b => ({
+        price_table_id: tableId,
+        neighborhood_key: b.key,
+        neighborhood_label: b.label,
+        client_price: +(b.cliente || 0),
+        courier_price: +(b.entregador || 0)
+      }));
+      const { error } = await db.from('price_items').insert(items);
+      if (error) throw error;
+      toast('success', 'Tabela salva com sucesso!');
+    } catch (e) { toast('error', 'Erro: ' + e.message); }
+    setSaving(false);
+  };
+  const exportPricesCSV = () => {
+    const hdr = ['Bairro', 'Preco Cliente (R$)', 'Preco Entregador (R$)'].join(',');
+    const rows = bairros.map(b => ['"' + (b.label || b.key) + '"', +(b.cliente || 0), +(b.entregador || 0)].join(','));
+    const csv = [hdr, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const anchor = Object.assign(document.createElement('a'), { href: url, download: 'tabela_precos.csv' });
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+  
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement(Topbar, {
@@ -5808,11 +5758,7 @@ const saveClientPrices = async () => {
         color: g > 0 ? 'var(--green)' : g === 0 ? 'var(--blue)' : 'var(--red)'
       }
     }, b.label, ": R$", g.toFixed(2));
-  }))), /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginTop: 16, marginBottom: 4 } },
-  /*#__PURE__*/React.createElement("button", { className: "btn btn-blue", onClick: saveDefaultPrices, disabled: saving, style: { flex: 1 } }, saving ? 'Salvando...' : '💾 Salvar tabela'),
-  /*#__PURE__*/React.createElement("button", { className: "btn", onClick: exportPricesCSV, style: { flex: 1 } }, '📥 Exportar CSV')
-),
-/*#__PURE__*/React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "notice ni",
     style: {
       marginTop: 12,
@@ -5864,7 +5810,12 @@ const saveClientPrices = async () => {
       fontSize: 11,
       color: 'var(--text2)'
     }
-  }, clientBairros.length, " bairro", clientBairros.length !== 1 ? 's' : '', " configurado", clientBairros.length !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("button", {
+  }, clientBairros.length, " bairro", clientBairros.length !== 1 ? 's' : '', " configurado", clientBairros.length !== 1 ? 's' : '')),
+  /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginTop: 16, marginBottom: 4 } },
+  /*#__PURE__*/React.createElement("button", { className: "btn btn-blue", onClick: saveDefaultPrices, disabled: saving, style: { flex: 1 } }, saving ? 'Salvando...' : '💾 Salvar tabela'),
+  /*#__PURE__*/React.createElement("button", { className: "btn", onClick: exportPricesCSV, style: { flex: 1 } }, '📥 Exportar CSV')
+),
+ /*#__PURE__*/React.createElement("button", {
     className: "btn-sm accept",
     onClick: () => {
       setClientBairros(prev => [...prev, {
