@@ -3766,7 +3766,7 @@ function CourierFin({
         width: '100%',
         textAlign: 'center'
       }
-    }, "Cancelar")), !day.isFuture && !hasClosing && !isLaunching && /*#__PURE__*/React.createElement("div", {
+    }, "Cancelar")), !day.isFuture && (!hasClosing || (!profile.referred_by && myCouriers.length > 0)) && !isLaunching && /*#__PURE__*/React.createElement("div", {
       style: {
         padding: '8px 12px',
         borderTop: '1px solid var(--border)'
