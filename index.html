@@ -3239,7 +3239,7 @@ function CourierFin({
       client_name: (client === null || client === void 0 ? void 0 : client.name) || '',
       date,
       courier_submission: submission,
-      status: 'pending_l0',
+      status: isLevel0 ? 'pending' : 'pending_l0',
       created_at: localTimestamp(),
       updated_at: localTimestamp()
     };
@@ -10799,6 +10799,98 @@ function RelatorioFinAdmin() {
   );
 }
 
+function MultiNivelReport() {
+  var toast = useToast();
+  var _now = new Date();
+  var _ym = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0');
+  var [fromDate, setFromDate] = React.useState(_ym + '-01');
+  var [toDate, setToDate] = React.useState(_ym + '-' + String(_now.getDate()).padStart(2,'0'));
+  var [rows, setRows] = React.useState([]);
+  var [loading, setLoading] = React.useState(false);
+
+  var load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      var [commsRes, closingsRes, defTblRes] = await Promise.all([
+        db.from('commission_entries').select('earner_id,source_id,relationship,commission_amount').gte('date', fromDate).lte('date', toDate),
+        db.from('daily_closings').select('courier_id,courier_name,courier_submission').gte('date', fromDate).lte('date', toDate).neq('status','pending_l0'),
+        db.from('price_tables').select('id').eq('is_default',true).maybeSingle()
+      ]);
+      var priceMap = {};
+      if (defTblRes.data) {
+        var { data: pis } = await db.from('price_items').select('neighborhood_key,courier_price').eq('price_table_id', defTblRes.data.id);
+        (pis||[]).forEach(function(p){ priceMap[p.neighborhood_key] = +p.courier_price; });
+      }
+      var { data: usersData } = await db.from('users').select('id,name').eq('role','courier');
+      var nameMap = {};
+      (usersData||[]).forEach(function(u){ nameMap[u.id] = u.name; });
+
+      var M = {};
+      var ensure = function(id) {
+        if (!M[id]) M[id] = { id:id, name: nameMap[id]||id.slice(0,8), prod:0, recN1:0, recN2:0, paidN1:0, paidN2:0 };
+      };
+
+      (closingsRes.data||[]).forEach(function(cl) {
+        ensure(cl.courier_id);
+        if (!nameMap[cl.courier_id] && cl.courier_name) M[cl.courier_id].name = cl.courier_name;
+        var sub = cl.courier_submission || [];
+        var val = sub.reduce(function(s,item){ return s + (+(item.qty||0)) * (priceMap[item.neighborhood_key]||0); }, 0);
+        M[cl.courier_id].prod += val;
+      });
+
+      (commsRes.data||[]).forEach(function(ce) {
+        ensure(ce.earner_id); ensure(ce.source_id);
+        var amt = +ce.commission_amount;
+        if (ce.relationship === 'n1') { M[ce.earner_id].recN1 += amt; M[ce.source_id].paidN1 += amt; }
+        else { M[ce.earner_id].recN2 += amt; M[ce.source_id].paidN2 += amt; }
+      });
+
+      setRows(Object.values(M).map(function(m){ return Object.assign({}, m, { net: m.prod + m.recN1 + m.recN2 - m.paidN1 - m.paidN2 }); }).sort(function(a,b){ return b.net - a.net; }));
+    } catch(e) { toast('error', 'Erro: ' + e.message); }
+    setLoading(false);
+  }, [fromDate, toDate]);
+
+  React.useEffect(function(){ load(); }, [load]);
+
+  var fmt = function(v){ return 'R$ ' + (+v).toFixed(2).replace('.',','); };
+  var row = function(label, val, color) {
+    return val === 0 ? null : [
+      /*#__PURE__*/React.createElement("span", { key: label+'l', style:{ color: color||'var(--text1)' } }, label),
+      /*#__PURE__*/React.createElement("span", { key: label+'v', style:{ textAlign:'right', color: color||'var(--text1)' } }, (color==='var(--green)'?'+':color==='var(--red)'?'-':'') + fmt(val))
+    ];
+  };
+
+  return /*#__PURE__*/React.createElement("div", { style:{ padding:'12px 14px 60px' } },
+    /*#__PURE__*/React.createElement("div", { style:{ display:'flex', gap:8, marginBottom:14, alignItems:'flex-end', flexWrap:'wrap' } },
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("div", { style:{ fontSize:11, color:'var(--text2)', marginBottom:4 } }, "De"),
+        /*#__PURE__*/React.createElement("input", { type:"date", value:fromDate, onChange:function(e){ setFromDate(e.target.value); }, style:{ fontSize:13 } })
+      ),
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("div", { style:{ fontSize:11, color:'var(--text2)', marginBottom:4 } }, "Até"),
+        /*#__PURE__*/React.createElement("input", { type:"date", value:toDate, onChange:function(e){ setToDate(e.target.value); }, style:{ fontSize:13 } })
+      ),
+      /*#__PURE__*/React.createElement("button", { className:"btn-sm", onClick:load }, "Atualizar")
+    ),
+    loading ? /*#__PURE__*/React.createElement("div", { className:"notice ni" }, "Carregando...") :
+    rows.length === 0 ? /*#__PURE__*/React.createElement("div", { className:"notice ni" }, "Nenhum movimento no período.") :
+    rows.map(function(m) { return /*#__PURE__*/React.createElement("div", { key:m.id, className:"ocard", style:{ marginBottom:8 } },
+      /*#__PURE__*/React.createElement("div", { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 } },
+        /*#__PURE__*/React.createElement("div", { style:{ fontWeight:700, fontSize:14 } }, "🛵 " + m.name),
+        /*#__PURE__*/React.createElement("div", { style:{ fontWeight:700, fontSize:15, color: m.net >= 0 ? 'var(--green)' : 'var(--red)' } }, fmt(m.net))
+      ),
+      /*#__PURE__*/React.createElement("div", { style:{ fontSize:12, display:'grid', gridTemplateColumns:'1fr auto', gap:'4px 12px', lineHeight:'1.7' } },
+        /*#__PURE__*/React.createElement("span", { style:{ color:'var(--text2)' } }, "Produção própria"),
+        /*#__PURE__*/React.createElement("span", { style:{ textAlign:'right' } }, fmt(m.prod)),
+        row("▲ Recebeu de N1", m.recN1, 'var(--green)'),
+        row("▲ Recebeu de N2", m.recN2, 'var(--green)'),
+        row("▼ Cedeu ao N0 direto", m.paidN1, 'var(--red)'),
+        row("▼ Cedeu ao N0 do N0", m.paidN2, 'var(--red)')
+      )
+    ); })
+  );
+}
+
 function AdminFin({
   setPage
 }) {
@@ -11142,7 +11234,7 @@ function AdminFin({
   }, "\uD83D\uDD17 Indica\xE7\xF5es"), /*#__PURE__*/React.createElement("button", {
     style: ts('historico'),
     onClick: () => setTab('historico')
-  }, "\uD83D\uDCCB Hist\xF3rico"), /*#__PURE__*/React.createElement("button", {style: ts('relatorio'), onClick: () => setTab('relatorio')}, "Relatório")), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCCB Hist\xF3rico"), /*#__PURE__*/React.createElement("button", {style: ts('relatorio'), onClick: () => setTab('relatorio')}, "Relatório", /*#__PURE__*/React.createElement("button", {style: ts('multinivel'), onClick: () => setTab('multinivel')}, "\uD83D\uDD17 Multín\xEDvel"))), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '12px 14px 0'
     }
@@ -11369,7 +11461,7 @@ function AdminFin({
       className: "btn-sm progress",
       onClick: () => payBonuses(co.id, co.name, mu)
     }, "Pagar b\xF4nus ", fmtMoney(mu))));
-  })), tab === 'relatorio' && /*#__PURE__*/React.createElement(RelatorioFinAdmin, null), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
+  })), tab === 'relatorio' && /*#__PURE__*/React.createElement(RelatorioFinAdmin, null), tab === 'multinivel' && /*#__PURE__*/React.createElement(MultiNivelReport, null), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
     style: { padding: '12px 14px 0' }
   }, /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' } },
     /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
