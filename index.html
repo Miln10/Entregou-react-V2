@@ -3655,7 +3655,7 @@ function CourierFin({
           color: si.color
         }
       }, si.icon, " ", total, " entregas \u2014 ", si.label)));
-    })), !day.isFuture && !hasClosing && isLaunching && /*#__PURE__*/React.createElement("div", {
+    })), !day.isFuture && (!hasClosing || (!profile.referred_by && myCouriers.length > 0)) && isLaunching && /*#__PURE__*/React.createElement("div", {
       style: {
         padding: '10px 12px',
         borderTop: '1px solid var(--border)'
