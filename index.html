@@ -5342,17 +5342,15 @@ function AdminSettings({
       nivel2_para_nivel0: String(mlData.value.nivel2_para_nivel0 || 0.30),
       total_pool: String(mlData.value.total_pool || 1.00)
     });
-    // Carrega bairros padrão do hardcode
-    const defaultBairros = Object.entries(BAIRRO_PRECO).map(([key, v]) => {
-      var _BAIRROS$find3;
-      return {
-        key,
-        label: ((_BAIRROS$find3 = BAIRROS.find(([k]) => k === key)) === null || _BAIRROS$find3 === void 0 ? void 0 : _BAIRROS$find3[1]) || key,
-        cliente: v.cliente,
-        entregador: v.entregador
-      };
-    });
-    setBairros(defaultBairros);
+    // Carrega bairros da tabela padrão no DB, fallback hardcode
+    const { data: defTableForBairros } = await db.from('price_tables').select('id').eq('is_default', true).maybeSingle();
+    const _hardcodeBairros = () => setBairros(Object.entries(BAIRRO_PRECO).map(([key, v]) => { var _B3; return { key, label: ((_B3 = BAIRROS.find(([k]) => k === key)) === null || _B3 === void 0 ? void 0 : _B3[1]) || key, cliente: v.cliente, entregador: v.entregador }; }));
+    if (defTableForBairros) {
+      const { data: dbBairros } = await db.from('price_items').select('neighborhood_key,neighborhood_label,client_price,courier_price').eq('price_table_id', defTableForBairros.id);
+      if (dbBairros && dbBairros.length) {
+        setBairros(dbBairros.map(item => ({ key: item.neighborhood_key, label: item.neighborhood_label, cliente: +item.client_price, entregador: +item.courier_price })));
+      } else { _hardcodeBairros(); }
+    } else { _hardcodeBairros(); }
     // Carrega redes
     const {
       data: nets
@@ -5478,7 +5476,7 @@ function AdminSettings({
   const saveDefaultPrices = async () => {
     setSaving(true);
     try {
-      const { data: defTable } = await db.from('price_tables').select('id').is('client_id', null).maybeSingle();
+      const { data: defTable } = await db.from('price_tables').select('id').eq('is_default', true).maybeSingle();
       let tableId = defTable ? defTable.id : null;
       if (!tableId) {
         const { data: nt } = await db.from('price_tables').insert({ name: 'Padrao' }).select().single();
