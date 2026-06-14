@@ -5492,6 +5492,7 @@ function AdminSettings({
         client_price: +(b.cliente || 0),
         courier_price: +(b.entregador || 0)
       }));
+      await db.from('price_items').delete().eq('price_table_id', tableId);
       const { error } = await db.from('price_items').insert(items);
       if (error) throw error;
       toast('success', 'Tabela salva com sucesso!');
