@@ -3148,7 +3148,7 @@ function CourierFin({
       return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
     });
     const currEarnings = currOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
-    const prevEarnings = prevOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
     // Build week days
@@ -4913,11 +4913,11 @@ function ClientFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1);
     const from = getWeekBounds(-8).startStr;
-    const [or, pa] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
+    const [or, pa, ds] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }), db.from('payments').select('*').eq('type', 'client_charge').eq('reference_id', profile.id).order('created_at', {
       ascending: false
-    }).limit(20)]);
+    }).limit(20), db.from('daily_summaries').select('date,client_total').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr)]);
     const orders = or.data || [];
     const payments = pa.data || [];
     const currOrders = orders.filter(o => {
@@ -4949,7 +4949,7 @@ function ClientFin({
       currOrders,
       prevOrders,
       currTotal: sum(currOrders),
-      prevTotal: sum(prevOrders),
+      prevTotal: (ds.data || []).reduce((a, d) => a + (+d.client_total || 0), 0) || sum(prevOrders),
       byCourier: Object.values(byCourier),
       payments,
       prevPayment
