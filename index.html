@@ -2966,6 +2966,14 @@ function ApproveTab({
       if (!gMap[key]) gMap[key] = { date: cl.date, client_id: cl.client_id, client_name: cl.client_name, closings: [] };
       gMap[key].closings.push(cl);
     });
+    // Adiciona closings do próprio N0 (status=pending) ao total do grupo
+    (histRes.data || []).filter(cl => cl.status === 'pending').forEach(cl => {
+      const key = cl.date + '__' + cl.client_id;
+      if (gMap[key]) {
+        if (!gMap[key].n0Closings) gMap[key].n0Closings = [];
+        gMap[key].n0Closings.push(cl);
+      }
+    });
     setGroups(Object.values(gMap).sort((a, b) => b.date.localeCompare(a.date)));
 
     // Group history by date + courier
@@ -3022,7 +3030,7 @@ function ApproveTab({
           ...groups.map(g => {
             const key = g.date + '_' + g.client_id;
             const isClosing = closing[key];
-            const qty = totalQty(g.closings);
+            const qty = totalQty([...g.closings, ...(g.n0Closings || [])]);
             return /*#__PURE__*/React.createElement("div", { key, style: { background: 'var(--bg2)', borderRadius: 12, padding: 16 } },
               /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 } },
                 /*#__PURE__*/React.createElement("div", {},
