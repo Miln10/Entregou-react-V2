@@ -4913,11 +4913,11 @@ function ClientFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1);
     const from = getWeekBounds(-8).startStr;
-    const [or, pa, ds] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
+    const [or, pa, ds, cl] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }), db.from('payments').select('*').eq('type', 'client_charge').eq('reference_id', profile.id).order('created_at', {
       ascending: false
-    }).limit(20), db.from('daily_summaries').select('date,client_total').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr)]);
+    }).limit(20), db.from('daily_summaries').select('date,client_total').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr), db.from('daily_closings').select('courier_submission,status').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr).neq('status', 'pending_l0')]);
     const orders = or.data || [];
     const payments = pa.data || [];
     const currOrders = orders.filter(o => {
@@ -4950,6 +4950,8 @@ function ClientFin({
       prevOrders,
       currTotal: sum(currOrders),
       prevTotal: (ds.data || []).reduce((a, d) => a + (+d.client_total || 0), 0) || sum(prevOrders),
+      prevQty: (cl.data || []).reduce((a, c) => a + (c.courier_submission || []).reduce((s, i) => s + (+i.qty || 0), 0), 0),
+      get prevCostPerDelivery() { const q = this.prevQty; return q > 0 ? Math.round(this.prevTotal / q * 100) / 100 : 0; },
       byCourier: Object.values(byCourier),
       payments,
       prevPayment
@@ -4996,6 +4998,8 @@ function ClientFin({
     prevOrders,
     currTotal,
     prevTotal,
+    prevQty,
+    prevCostPerDelivery,
     byCourier,
     payments,
     prevPayment
@@ -5200,9 +5204,9 @@ function ClientFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, prevOrders.length), /*#__PURE__*/React.createElement("div", {
+  }, prevQty), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "entregas"))), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
+  }, "entregas"))), /*#__PURE__*/React.createElement("div", {style: {display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px", background:"var(--surface2)", borderRadius:"var(--rs)", marginTop:8}}, /*#__PURE__*/React.createElement("div", {style: {fontSize:12, color:"var(--text2)"}}, "custo por entrega"), /*#__PURE__*/React.createElement("div", {style: {fontSize:16, fontWeight:700, color:"var(--blue)"}}, prevCostPerDelivery > 0 ? fmtMoney(prevCostPerDelivery) : "\u2014")), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
     className: "notice ns",
     style: {
       margin: '10px 0'
