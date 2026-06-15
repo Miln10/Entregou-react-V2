@@ -2736,7 +2736,7 @@ function ClientClosing({
 
   const loadSummaries = async () => {
     setLoading(true);
-    const statuses = tab === 'pending' ? ['pending'] : ['matched', 'diverged', 'agreed'];
+    const statuses = tab === 'pending' ? ['awaiting_client'] : ['matched', 'diverged', 'agreed'];
     const r = await db.from('daily_summaries').select('*').eq('client_id', profile.id).in('status', statuses).order('date', {
       ascending: false
     });
