@@ -4917,7 +4917,7 @@ function ClientFin({
       ascending: false
     }), db.from('payments').select('*').eq('type', 'client_charge').eq('reference_id', profile.id).order('created_at', {
       ascending: false
-    }).limit(20), db.from('daily_summaries').select('date,client_total').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr), db.from('daily_closings').select('courier_submission,status').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr).neq('status', 'pending_l0')]);
+    }).limit(20), db.from('daily_summaries').select('date,client_total').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr), db.from('daily_closings').select('courier_submission,status').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr).eq('status','agreed')]);
     const orders = or.data || [];
     const payments = pa.data || [];
     const currOrders = orders.filter(o => {
@@ -10066,7 +10066,7 @@ function AdminRelatorio({
     } = getPeriodRange();
     const [ordRes, netRes, couRes, cliRes, dcRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
       ascending: false
-    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client'), db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_value,status').gte('date', from).lte('date', to).neq('status','pending_l0').order('date',{ascending:false})]);
+    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client'), db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_value,status').gte('date', from).lte('date', to).eq('status','agreed').order('date',{ascending:false})]);
     setOrders([...(ordRes.data||[]),...(dcRes.data||[]).map(dc=>({id:'dc_'+dc.id,client_id:dc.client_id,client_name:dc.client_name,courier_id:dc.courier_id,courier_name:dc.courier_name,price:0,courier_price:+dc.courier_value||0,gestora_amount:0,status:'done',created_at:dc.date+'T12:00:00',neighborhood:'Laçamento',_source:'closing'}))]);
     setNetworks(netRes.data || []);
     setCouriers(couRes.data || []);
@@ -10825,7 +10825,7 @@ function MultiNivelReport() {
     try {
       var [commsRes, closingsRes, defTblRes] = await Promise.all([
         db.from('commission_entries').select('earner_id,source_id,relationship,commission_amount').gte('date', fromDate).lte('date', toDate),
-        db.from('daily_closings').select('courier_id,courier_name,courier_submission').gte('date', fromDate).lte('date', toDate).neq('status','pending_l0'),
+        db.from('daily_closings').select('courier_id,courier_name,courier_submission').gte('date', fromDate).lte('date', toDate).eq('status','agreed'),
         db.from('price_tables').select('id').eq('is_default',true).maybeSingle()
       ]);
       var priceMap = {};
@@ -10924,7 +10924,7 @@ function EntregadoresView() {
     setDateTo = _s4[1];
   var load = async function () {
     setLoading(true);
-    var _r = await Promise.all([db.from('daily_closings').select('courier_id,courier_name,courier_value,courier_submission,status').gte('date', dateFrom).lte('date', dateTo).neq('status', 'pending_l0'), db.from('commission_entries').select('earner_id,source_id,relationship,commission_amount,date').gte('date', dateFrom).lte('date', dateTo)]);
+    var _r = await Promise.all([db.from('daily_closings').select('courier_id,courier_name,courier_value,courier_submission,status').gte('date', dateFrom).lte('date', dateTo).eq('status','agreed'), db.from('commission_entries').select('earner_id,source_id,relationship,commission_amount,date').gte('date', dateFrom).lte('date', dateTo)]);
     var closings = _r[0].data || [];
     var commissions = _r[1].data || [];
     var courierMap = {};
@@ -11119,7 +11119,7 @@ function TransacoesView() {
   };
   var load = async function () {
     setLoading(true);
-    var _r = await Promise.all([db.from('daily_closings').select('id,date,client_id,client_name,courier_name,courier_value,status').gte('date', dateFrom).lte('date', dateTo).neq('status', 'pending_l0').order('date', {
+    var _r = await Promise.all([db.from('daily_closings').select('id,date,client_id,client_name,courier_name,courier_value,status').gte('date', dateFrom).lte('date', dateTo).eq('status','agreed').order('date', {
       ascending: false
     }), db.from('daily_summaries').select('date,client_id,client_name,client_total').gte('date', dateFrom).lte('date', dateTo).order('date', {
       ascending: false
