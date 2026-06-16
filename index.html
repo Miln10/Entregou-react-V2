@@ -10064,10 +10064,10 @@ function AdminRelatorio({
       from,
       to
     } = getPeriodRange();
-    const [ordRes, netRes, couRes, cliRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
+    const [ordRes, netRes, couRes, cliRes, dcRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
       ascending: false
-    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client')]);
-    setOrders(ordRes.data || []);
+    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client'), db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_value,status').gte('date', from).lte('date', to).neq('status','pending_l0').order('date',{ascending:false})]);
+    setOrders([...(ordRes.data||[]),...(dcRes.data||[]).map(dc=>({id:'dc_'+dc.id,client_id:dc.client_id,client_name:dc.client_name,courier_id:dc.courier_id,courier_name:dc.courier_name,price:0,courier_price:+dc.courier_value||0,gestora_amount:0,status:'done',created_at:dc.date+'T12:00:00',neighborhood:'Laçamento',_source:'closing'}))]);
     setNetworks(netRes.data || []);
     setCouriers(couRes.data || []);
     setClients(cliRes.data || []);
