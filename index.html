@@ -3148,7 +3148,10 @@ function CourierFin({
       var _o$created_at3, _o$created_at4;
       return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
     });
-    const currEarnings = currOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const currEarningsOrds = currOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const currEarningsCls = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const currEarnings = currEarningsOrds + currEarningsCls;
+    const currCount = currOrders.length + (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + ((cl.courier_submission||[]).reduce((b, s) => b + (s.qty||0), 0)), 0);
     const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
@@ -3421,7 +3424,7 @@ function CourierFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
+  }, currCount), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), /*#__PURE__*/React.createElement("div", {
     style: {
