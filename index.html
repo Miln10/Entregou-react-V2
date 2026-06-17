@@ -10132,6 +10132,7 @@ function AdminRelatorio({
   const totalClient = filtered.reduce((a, o) => a + (+o.price || 0), 0);
   const totalCourier = filtered.reduce((a, o) => a + (+o.courier_price || 0), 0);
   const totalGestora = filtered.reduce((a, o) => a + (+o.gestora_amount || 0), 0);
+  const totalCommission = (commissions||[]).reduce((a,c)=>a+(+c.amount||0),0);
   const totalApp = filtered.filter(o => !isManual(o)).length;
   const totalManual = filtered.filter(o => isManual(o)).length;
 
@@ -10373,21 +10374,11 @@ function AdminRelatorio({
   }, n.name)))), loading ? /*#__PURE__*/React.createElement(Loading, null) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'grid',
-      gridTemplateColumns: 'repeat(3,1fr)',
+      gridTemplateColumns: 'repeat(2,1fr)',
       gap: 6,
       padding: '0 14px 10px'
     }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "mcard"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mval",
-    style: {
-      fontSize: 16,
-      color: 'var(--blue)'
-    }
-  }, fmtMoney(totalClient)), /*#__PURE__*/React.createElement("div", {
-    className: "mlbl"
-  }, "receita")), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval",
@@ -10403,11 +10394,11 @@ function AdminRelatorio({
     className: "mval",
     style: {
       fontSize: 16,
-      color: 'var(--amber)'
+      color: 'var(--purple)'
     }
-  }, fmtMoney(totalGestora)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(totalCommission)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "gestora"))), /*#__PURE__*/React.createElement("div", {
+  }, "de indicados"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
       gap: 6,
@@ -10534,21 +10525,11 @@ function AdminRelatorio({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 12,
+      fontSize: 13,
       fontWeight: 700,
-      color: 'var(--blue)'
-    }
-  }, fmtMoney(o.price), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,fontWeight:400,opacity:0.6,marginLeft:3}}, "receita")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
       color: 'var(--green)'
     }
-  }, fmtMoney(o.courier_price), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "entregador")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: 'var(--amber)'
-    }
-  }, fmtMoney(o.gestora_amount), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "gestora")))))), tab === 'courier' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byCourier).sort((a, b) => b.count - a.count).map(co => {
+  }, fmtMoney(o.courier_price)))))), tab === 'courier' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byCourier).sort((a, b) => b.count - a.count).map(co => {
     var _co$name2;
     return /*#__PURE__*/React.createElement("div", {
       key: co.id,
@@ -10597,17 +10578,7 @@ function AdminRelatorio({
         fontWeight: 700,
         color: 'var(--blue)'
       }
-    }, fmtMoney(co.client), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "cliente")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: 'var(--green)'
-      }
-    }, fmtMoney(co.courier), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "entregador")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: 'var(--amber)'
-      }
-    }, fmtMoney(co.gestora), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "gestora")), /*#__PURE__*/React.createElement("div", {style:{fontSize:10,color:'var(--purple)'}}, fmtMoney(co.commission||0), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "de indicados"))));
+    }, fmtMoney(co.courier)), /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:'var(--purple)'}}, fmtMoney(co.commission||0), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "de indicados"))));
   })), tab === 'client' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byClient).sort((a, b) => b.count - a.count).map(cl => /*#__PURE__*/React.createElement("div", {
     key: cl.id,
     style: {
