@@ -10538,17 +10538,17 @@ function AdminRelatorio({
       fontWeight: 700,
       color: 'var(--blue)'
     }
-  }, fmtMoney(o.price)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(o.price), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,fontWeight:400,opacity:0.6,marginLeft:3}}, "receita")), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: 'var(--green)'
     }
-  }, fmtMoney(o.courier_price)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(o.courier_price), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "entregador")), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: 'var(--amber)'
     }
-  }, fmtMoney(o.gestora_amount)))))), tab === 'courier' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byCourier).sort((a, b) => b.count - a.count).map(co => {
+  }, fmtMoney(o.gestora_amount), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "gestora")))))), tab === 'courier' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byCourier).sort((a, b) => b.count - a.count).map(co => {
     var _co$name2;
     return /*#__PURE__*/React.createElement("div", {
       key: co.id,
