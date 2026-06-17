@@ -3108,6 +3108,7 @@ function CourierFin({
   // Closing form state
   const [selClient, setSelClient] = useState('');
   const [clients, setClients] = useState([]);
+  const [commissions, setCommissions] = useState([]);
   const [priceItems, setPriceItems] = useState([]);
   const [quantities, setQuantities] = useState({});
   const [date, setDate] = useState(localDateStr());
@@ -10064,13 +10065,19 @@ function AdminRelatorio({
       from,
       to
     } = getPeriodRange();
-    const [ordRes, netRes, couRes, cliRes, dcRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
+    const [ordRes, netRes, couRes, cliRes, dcRes, dsRes, ceRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
       ascending: false
-    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client'), db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_value,status').gte('date', from).lte('date', to).eq('status','agreed').order('date',{ascending:false})]);
-    setOrders([...(ordRes.data||[]),...(dcRes.data||[]).map(dc=>({id:'dc_'+dc.id,client_id:dc.client_id,client_name:dc.client_name,courier_id:dc.courier_id,courier_name:dc.courier_name,price:0,courier_price:+dc.courier_value||0,gestora_amount:0,status:'done',created_at:dc.date+'T12:00:00',neighborhood:'Laçamento',_source:'closing'}))]);
+    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client'), db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_value,status').gte('date', from).lte('date', to).eq('status','agreed').order('date',{ascending:false}),
+      db.from('daily_summaries').select('id,date,client_id,client_total').gte('date', from).lte('date', to).eq('status','matched'),
+      db.from('commission_entries').select('id,date,earner_id,earner_name,amount,relationship_type,source_courier_id,source_courier_name').gte('date', from).lte('date', to)
+    ]);
+    const dsMap = {};
+    (dsRes.data||[]).forEach(ds => { dsMap[ds.date+'_'+ds.client_id] = +ds.client_total||0; });
+    setOrders([...(ordRes.data||[]),...(dcRes.data||[]).map(dc=>({id:'dc_'+dc.id,client_id:dc.client_id,client_name:dc.client_name,courier_id:dc.courier_id,courier_name:dc.courier_name,price:dsMap[dc.date+'_'+dc.client_id]||0,courier_price:+dc.courier_value||0,gestora_amount:0,status:'done',created_at:dc.date+'T12:00:00',neighborhood:'Laçamento',_source:'closing'}))]);
     setNetworks(netRes.data || []);
     setCouriers(couRes.data || []);
     setClients(cliRes.data || []);
+    setCommissions(ceRes.data || []);
     setLoading(false);
   }, [period, customFrom, customTo]);
   useEffect(() => {
@@ -10146,6 +10153,10 @@ function AdminRelatorio({
     byCourier[k].client += +o.price || 0;
     byCourier[k].courier += +o.courier_price || 0;
     byCourier[k].gestora += +o.gestora_amount || 0;
+  });
+  (commissions||[]).forEach(ce => {
+    const k = ce.earner_id;
+    if (byCourier[k]) { byCourier[k].commission = (byCourier[k].commission||0) + (+ce.amount||0); }
   });
 
   // Group by client
@@ -10596,7 +10607,7 @@ function AdminRelatorio({
         fontSize: 10,
         color: 'var(--amber)'
       }
-    }, fmtMoney(co.gestora))));
+    }, fmtMoney(co.gestora)), co.commission > 0 && /*#__PURE__*/React.createElement("div", {style:{fontSize:10,color:'var(--purple)'}}, '+ '+fmtMoney(co.commission)+' comissão')));
   })), tab === 'client' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byClient).sort((a, b) => b.count - a.count).map(cl => /*#__PURE__*/React.createElement("div", {
     key: cl.id,
     style: {
