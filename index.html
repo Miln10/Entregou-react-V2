@@ -3104,6 +3104,7 @@ function CourierFin({
   const [tab, setTab] = useState('week');
   const [weekData, setWeekData] = useState(null);
   const [closings, setClosings] = useState([]);
+  const [commissions, setCommissions] = useState([]);
   const [loading, setLoading] = useState(true);
   // Closing form state
   const [selClient, setSelClient] = useState('');
@@ -3131,13 +3132,13 @@ function CourierFin({
       const indirect = (teamData||[]).filter(c => direct.find(n => n.id === c.referred_by));
       setMyCouriers([...direct, ...indirect]);
     }
-    const [ordRes, closRes, cliRes, payRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
+    const [ordRes, closRes, cliRes, payRes, ceRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }), db.from('daily_closings').select('*').eq('courier_id', profile.id).gte('date', (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-01'; })()).order('date', {
       ascending: false
     }), db.from('users').select('id,name').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
-    }).limit(5)]);
+    }).limit(5), db.from('commission_entries').select('id,date,amount,relationship_type,source_courier_id,source_courier_name').eq('earner_id', profile.id).gte('date', (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-01'; })()).order('date', {ascending:false})]);
     const orders = ordRes.data || [];
     const currOrders = orders.filter(o => {
       var _o$created_at, _o$created_at2;
@@ -3181,6 +3182,7 @@ function CourierFin({
       days
     });
     setClosings(closRes.data || []);
+    setCommissions(ceRes.data || []);
     setClients(cliRes.data || []);
     setLoading(false);
   }, [profile]);
@@ -3806,13 +3808,17 @@ function CourierFin({
     return Object.values(wks).sort((a,b) => b.startStr.localeCompare(a.startStr)).map(wk => {
       const totalE = wk.closings.reduce((a,cl) => a+(cl.courier_submission||[]).reduce((b,s)=>b+s.qty,0), 0);
       const ganhos = allOrds.filter(o => { const d=(o.created_at||'').slice(0,10); return d>=wk.startStr&&d<=wk.endStr; }).reduce((a,o)=>a+(+o.courier_price||0),0);
+      const ganhosClosings = wk.closings.reduce((a,cl)=>a+(+cl.courier_value||0),0);
+      const totalGanhos = ganhos + ganhosClosings;
+      const redeGanhos = (commissions||[]).filter(c=>c.date>=wk.startStr&&c.date<=wk.endStr).reduce((a,c)=>a+(+c.amount||0),0);
       return /*#__PURE__*/React.createElement("div", { key: wk.startStr, style: { border: '1px solid var(--border)', borderRadius: 'var(--r)', marginBottom: 10, overflow: 'hidden' } },
-        /*#__PURE__*/React.createElement("div", { style: { padding: '10px 12px', background: 'var(--bg2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          /*#__PURE__*/React.createElement("div", null,
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700 } }, "Semana ", fmtDate(wk.startStr), " \u2014 ", fmtDate(wk.endStr)),
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, totalE, " entrega(s) confirmada(s)")
-          ),
-          ganhos > 0 && /*#__PURE__*/React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: 'var(--green)' } }, fmtMoney(ganhos))
+        /*#__PURE__*/React.createElement("div", { style: { padding: '10px 12px', background: 'var(--bg2)' } },
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 6 } }, "Semana ", fmtDate(wk.startStr), " \u2014 ", fmtDate(wk.endStr)),
+          /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+            /*#__PURE__*/React.createElement("span", { style: { padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 500, background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text2)' } }, totalE, " entregas"),
+            totalGanhos > 0 && /*#__PURE__*/React.createElement("span", { style: { padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: '#EDFAF3', border: '1px solid var(--green)', color: 'var(--green)' } }, fmtMoney(totalGanhos)),
+            redeGanhos > 0 && /*#__PURE__*/React.createElement("span", { style: { padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: '#EEEDFE', border: '1px solid var(--purple)', color: 'var(--purple)' } }, fmtMoney(redeGanhos), " rede")
+          )
         ),
         wk.closings.map(cl => {
           const totalCl = (cl.courier_submission||[]).reduce((a,s)=>a+s.qty,0);
@@ -3821,7 +3827,11 @@ function CourierFin({
               /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 500 } }, fmtDate(cl.date), " \xB7 ", cl.client_name||'Cliente'),
               /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, (cl.courier_submission||[]).map((s,i) => /*#__PURE__*/React.createElement("span", { key: i, style: { marginRight: 6 } }, s.label||s.key, ": ", s.qty)))
             ),
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: 'var(--text2)', whiteSpace: 'nowrap' } }, totalCl, " entregas")
+            /*#__PURE__*/React.createElement("div", { style: { textAlign: 'right' } },
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)' } }, totalCl, " entregas"),
+            (+cl.courier_value||0) > 0 && /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: 'var(--green)' } }, fmtMoney(+cl.courier_value||0)),
+            (()=>{ const d=(commissions||[]).filter(c=>c.date===cl.date).reduce((a,c)=>a+(+c.amount||0),0); return d>0&&/*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--purple)' } }, "+ ", fmtMoney(d), " rede"); })()
+          )
           );
         })
       );
