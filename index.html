@@ -3149,9 +3149,9 @@ function CourierFin({
       return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
     });
     const currEarningsOrds = currOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
-    const currEarningsCls = (closings || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const currEarningsCls = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
     const currEarnings = currEarningsOrds + currEarningsCls;
-    const prevEarnings = (closings || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
     // Build week days
@@ -3160,7 +3160,7 @@ function CourierFin({
       const d = new Date(parseDate(wC.startStr + 'T12:00:00'));
       d.setDate(d.getDate() + i);
       const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-      const dayClosings = (closings || []).filter(cl => cl.date === ds);
+      const dayClosings = (closRes.data || []).filter(cl => cl.date === ds);
       const dayOrders = currOrders.filter(o => {
         var _o$created_at5;
         return ((_o$created_at5 = o.created_at) === null || _o$created_at5 === void 0 ? void 0 : _o$created_at5.slice(0, 10)) === ds;
