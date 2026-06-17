@@ -10597,17 +10597,17 @@ function AdminRelatorio({
         fontWeight: 700,
         color: 'var(--blue)'
       }
-    }, fmtMoney(co.client)), /*#__PURE__*/React.createElement("div", {
+    }, fmtMoney(co.client), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "cliente")), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: 'var(--green)'
       }
-    }, fmtMoney(co.courier)), /*#__PURE__*/React.createElement("div", {
+    }, fmtMoney(co.courier), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "entregador")), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: 'var(--amber)'
       }
-    }, fmtMoney(co.gestora)), co.commission > 0 && /*#__PURE__*/React.createElement("div", {style:{fontSize:10,color:'var(--purple)'}}, '+ '+fmtMoney(co.commission)+' comissão')));
+    }, fmtMoney(co.gestora), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "gestora")), /*#__PURE__*/React.createElement("div", {style:{fontSize:10,color:'var(--purple)'}}, fmtMoney(co.commission||0), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "de indicados"))));
   })), tab === 'client' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byClient).sort((a, b) => b.count - a.count).map(cl => /*#__PURE__*/React.createElement("div", {
     key: cl.id,
     style: {
