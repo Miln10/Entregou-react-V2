@@ -8475,7 +8475,6 @@ function AdminManualDelivery({
   const toast = useToast();
   const [couriers, setCouriers] = useState([]);
   const [clients, setClients] = useState([]);
-  const [commissions, setCommissions] = useState([]);
   const [selCourier, setSelCourier] = useState('');
   const [selClient, setSelClient] = useState('');
   const [priceItems, setPriceItems] = useState([]);
@@ -10020,6 +10019,7 @@ function AdminRelatorio({
   const [networks, setNetworks] = useState([]);
   const [couriers, setCouriers] = useState([]);
   const [clients, setClients] = useState([]);
+  const [commissions, setCommissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState('week');
   const [customFrom, setCustomFrom] = useState(localDateStr());
