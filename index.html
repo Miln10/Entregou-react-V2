@@ -3417,9 +3417,9 @@ function CourierFin({
     style: {
       color: 'var(--green)'
     }
-  }, fmtMoney(currEarnings)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney((()=>{const _r=(commissions||[]).filter(c=>c.date>=wC.startStr&&c.date<=wC.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0);return currEarnings+_r;})()), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "a receber")), /*#__PURE__*/React.createElement("div", {
+  }, "a receber"), (()=>{const _r=(commissions||[]).filter(c=>c.date>=wC.startStr&&c.date<=wC.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0);return _r>0?/*#__PURE__*/React.createElement("div",{style:{fontSize:10,color:'var(--text2)',marginTop:4,textAlign:'center'}},/*#__PURE__*/React.createElement("span",{style:{color:'var(--green)'}},fmtMoney(currEarnings)+" próprias"),"  ·  ",/*#__PURE__*/React.createElement("span",{style:{color:'var(--purple)'}},fmtMoney(_r)+" rede")):null;})()), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
