@@ -3108,7 +3108,6 @@ function CourierFin({
   // Closing form state
   const [selClient, setSelClient] = useState('');
   const [clients, setClients] = useState([]);
-  const [commissions, setCommissions] = useState([]);
   const [priceItems, setPriceItems] = useState([]);
   const [quantities, setQuantities] = useState({});
   const [date, setDate] = useState(localDateStr());
@@ -8476,6 +8475,7 @@ function AdminManualDelivery({
   const toast = useToast();
   const [couriers, setCouriers] = useState([]);
   const [clients, setClients] = useState([]);
+  const [commissions, setCommissions] = useState([]);
   const [selCourier, setSelCourier] = useState('');
   const [selClient, setSelClient] = useState('');
   const [priceItems, setPriceItems] = useState([]);
