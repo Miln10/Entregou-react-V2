@@ -3106,6 +3106,7 @@ function CourierFin({
   const [closings, setClosings] = useState([]);
   const [commissions, setCommissions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selWeek, setSelWeek] = useState(0);
   // Closing form state
   const [selClient, setSelClient] = useState('');
   const [clients, setClients] = useState([]);
@@ -3122,8 +3123,8 @@ function CourierFin({
 
   const loadAll = useCallback(async () => {
     if (!profile) return;
-    const wC = getWeekBounds(0);
-    const wP = getWeekBounds(-1);
+    const wC = getWeekBounds(selWeek);
+    const wP = getWeekBounds(selWeek - 1);
     const from = wP.startStr;
     // Buscar indicados (só para N0)
     if (!profile.referred_by) {
@@ -3187,7 +3188,7 @@ function CourierFin({
     setCommissions(ceRes.data || []);
     setClients(cliRes.data || []);
     setLoading(false);
-  }, [profile]);
+  }, [profile, selWeek]);
   useEffect(() => {
     loadAll();
   }, [loadAll]);
@@ -3403,6 +3404,27 @@ function CourierFin({
       padding: '14px 14px 0'
     }
   }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginBottom: 12,
+      overflowX: 'auto'
+    }
+  }, [[0,'Esta semana'],[-1,'Semana anterior'],[-2,'Há 2 semanas']].map(([v,l]) => /*#__PURE__*/React.createElement("button", {
+    key: v,
+    onClick: () => setSelWeek(v),
+    style: {
+      padding: '4px 12px',
+      borderRadius: 20,
+      border: '1.5px solid var(--blue)',
+      background: selWeek === v ? 'var(--blue)' : 'transparent',
+      color: selWeek === v ? '#fff' : 'var(--blue)',
+      fontSize: 12,
+      cursor: 'pointer',
+      whiteSpace: 'nowrap',
+      fontFamily: 'var(--font)'
+    }
+  }, l))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: 'var(--text2)',
@@ -11309,7 +11331,7 @@ function AdminFin({
   const [tab, setTab] = useState('cobrar'); // cobrar | pagar | indicacoes | historico
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selWeek, setSelWeek] = useState(0); // 0=atual, -1=anterior
+  const [selWeek, setSelWeek] = useState(-1); // 0=atual, -1=anterior
   const _nowAF = new Date();
   const _todayAF = _nowAF.getFullYear() + '-' + String(_nowAF.getMonth()+1).padStart(2,'0') + '-' + String(_nowAF.getDate()).padStart(2,'0');
   const _weekAgoAF = (() => { const d = new Date(_nowAF); d.setDate(d.getDate()-6); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); })();
