@@ -1113,6 +1113,47 @@ textarea{resize:none;height:72px;line-height:1.5;}
 .fab:hover{transform:scale(1.1);}
 .toast{background:#1a1a1a;color:#fff;padding:9px 18px;border-radius:20px;font-size:13px;font-weight:600;white-space:nowrap;max-width:90vw;text-align:center;animation:fadeInOut 3s ease forwards;}
 @keyframes fadeInOut{0%{opacity:0;transform:translateY(8px)}10%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0}}
+
+/* ── CourierQueue: CheckIn ── */
+.checkin-screen{flex:1;display:flex;flex-direction:column;padding:24px 20px;gap:16px;}
+.checkin-screen h2{font-size:20px;font-weight:700;}
+.checkin-screen p{font-size:14px;color:#666;}
+.client-card{border:1.5px solid #eee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:10px;cursor:pointer;transition:all 0.15s;}
+.client-card:hover{border-color:#43A047;background:#F1F8E9;}
+.client-card.full{opacity:0.6;cursor:not-allowed;}
+.client-name{font-size:17px;font-weight:700;}
+.slots-info{display:flex;align-items:center;gap:8px;}
+.slots-bar{flex:1;height:6px;background:#eee;border-radius:3px;overflow:hidden;}
+.slots-fill{height:100%;background:#43A047;border-radius:3px;transition:width 0.3s;}
+.slots-fill.warning{background:#FFA000;}
+.slots-fill.full{background:#E53935;}
+.slots-text{font-size:12px;color:#666;white-space:nowrap;}
+.checkin-banner{background:#E8F5E9;border-bottom:2px solid #43A047;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;}
+.checkin-banner .checkin-info{font-size:13px;color:#2E7D32;font-weight:600;}
+.checkin-banner .checkin-time{font-size:11px;color:#666;}
+.cq-order-card{background:white;border:1.5px solid #eee;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:0 1px 4px rgba(0,0,0,0.06);}
+.cq-order-card.mine{border-color:#43A047;background:#F1F8E9;}
+.cq-order-header{display:flex;align-items:center;justify-content:space-between;gap:6px;}
+.cq-platform-badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:#E53935;color:white;}
+.cq-order-id{font-size:11px;color:#999;}
+.cq-status-badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;}
+.cq-status-available{background:#E3F2FD;color:#1565C0;}
+.cq-status-accepted{background:#E8F5E9;color:#2E7D32;}
+.cq-status-cancelled{background:#FFEBEE;color:#C62828;}
+.cq-neighborhood{font-size:18px;font-weight:700;}
+.cq-street{font-size:13px;color:#666;margin-top:2px;}
+.cq-order-meta{display:flex;gap:12px;align-items:center;}
+.cq-price-tag{background:#E8F5E9;color:#2E7D32;font-weight:700;font-size:15px;padding:4px 10px;border-radius:8px;}
+.cq-items-preview{font-size:12px;color:#888;flex:1;}
+.active-order{background:#E8F5E9;border:2px solid #43A047;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px;}
+.active-order-label{font-size:11px;font-weight:700;color:#2E7D32;text-transform:uppercase;letter-spacing:0.5px;}
+.cq-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:flex-end;z-index:999;max-width:420px;margin:0 auto;left:50%;transform:translateX(-50%);}
+.cq-modal-sheet{background:white;width:100%;border-radius:20px 20px 0 0;padding:24px;display:flex;flex-direction:column;gap:16px;}
+.code-input{font-size:32px;letter-spacing:12px;text-align:center;padding:16px;border:2px solid #ddd;border-radius:12px;outline:none;width:100%;}
+.code-input:focus{border-color:#43A047;}
+.hub-badge{background:#6A1B9A;color:white;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;}
+.cancel-alert-cq{position:fixed;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:420px;background:#C62828;color:white;padding:16px 20px;font-size:14px;font-weight:600;text-align:center;z-index:1000;animation:cqSlideDown 0.3s ease;}
+@keyframes cqSlideDown{from{transform:translateX(-50%) translateY(-100%);}to{transform:translateX(-50%) translateY(0);}}
 </style>
 </head>
 <body>
@@ -1950,6 +1991,10 @@ function NavDrawer({
     icon: '📅',
     label: 'Turnos',
     page: 'courier-shifts'
+  }, {
+    icon: '📦',
+    label: 'Pedidos',
+    page: 'courier-queue'
   }, {
     icon: '💰',
     label: 'Financeiro',
@@ -12003,7 +12048,7 @@ function App() {
     const saved = localStorage.getItem('entregou_page');
     const adminPages = ['admin', 'admin-orders', 'admin-new', 'admin-manual', 'admin-new-client', 'admin-couriers', 'admin-shifts', 'admin-map', 'admin-fin', 'admin-settings'];
     const clientPages = ['new-order', 'client-orders', 'client-closing', 'client-fin', 'track'];
-    const courierPages = ['courier', 'courier-card', 'courier-shifts', 'courier-fin'];
+    const courierPages = ['courier', 'courier-card', 'courier-shifts', 'courier-fin', 'courier-queue'];
     const validForRole = (role, pg) => {
       if (role === 'admin') return adminPages.includes(pg);
       if (role === 'client') return clientPages.includes(pg);
@@ -12142,12 +12187,276 @@ function App() {
         return /*#__PURE__*/React.createElement(ProfilePage, {
           goBack: goBack
         });
+      case 'courier-queue':
+        return /*#__PURE__*/React.createElement(CourierQueue, {
+          setPage: setPage
+        });
       default:
         return /*#__PURE__*/React.createElement(AuthPage, null);
     }
   };
   return /*#__PURE__*/React.createElement(React.Fragment, null, renderPage(), /*#__PURE__*/React.createElement(NavFAB, null));
 }
+
+/* ══════════════════════════════════════════
+   COURIER QUEUE — Fila de pedidos + Check-in
+   ══════════════════════════════════════════ */
+
+function cqTimeSince(ts) {
+  const mins = Math.floor((Date.now() - new Date(ts)) / 60000);
+  if (mins < 1) return 'agora';
+  if (mins === 1) return '1 min';
+  return mins + ' min';
+}
+function cqStatusLabel(s) {
+  const map = { available:'Disponível', accepted:'Aceito', delivering:'Em entrega',
+    delivered:'Entregue', cancelled:'Cancelado', cancelled_by_platform:'⚠️ Cancelado',
+    cancelled_after_delivery:'Cancelado pós-entrega' };
+  return map[s] || s;
+}
+function cqStatusClass(s) {
+  if (s === 'available') return 'cq-status-available';
+  if (s === 'accepted' || s === 'delivered') return 'cq-status-accepted';
+  if (s && s.includes('cancelled')) return 'cq-status-cancelled';
+  return '';
+}
+
+function CheckinScreen({ courier, onCheckin }) {
+  const [clients, setClients] = React.useState([]);
+  const [checkins, setCheckins] = React.useState([]);
+  const [loadingCI, setLoadingCI] = React.useState(true);
+  React.useEffect(() => {
+    async function load() {
+      const { data: nc } = await db.from('network_clients').select('*, client:client_id(name)').eq('network_id', courier.network_id);
+      const { data: ci } = await db.from('courier_checkins').select('courier_id, client_id').is('checked_out_at', null);
+      setClients(nc || []); setCheckins(ci || []); setLoadingCI(false);
+    }
+    load();
+    const ch = db.channel('cq_checkins_live').on('postgres_changes', { event: '*', schema: 'public', table: 'courier_checkins' }, load).subscribe();
+    return () => db.removeChannel(ch);
+  }, [courier.network_id]);
+  async function handleCheckin(nc) {
+    const present = checkins.filter(c => c.client_id === nc.client_id).length;
+    if (present >= nc.max_slots) return;
+    const { data, error } = await db.from('courier_checkins').insert({ courier_id: courier.id, client_id: nc.client_id, network_id: courier.network_id }).select().single();
+    if (!error) onCheckin(data);
+  }
+  if (loadingCI) return React.createElement("div", { className: "loading" }, "Carregando clientes...");
+  return React.createElement("div", { className: "checkin-screen" },
+    React.createElement("div", null, React.createElement("h2", null, "Onde você está?"), React.createElement("p", { style: { marginTop: 4 } }, "Toque no cliente para fazer check-in e começar a receber pedidos.")),
+    clients.length === 0 && React.createElement("div", { className: "empty" }, React.createElement("div", { className: "eico" }, "🏪"), "Nenhum cliente disponível para sua rede"),
+    clients.map(nc => {
+      const present = checkins.filter(c => c.client_id === nc.client_id).length;
+      const pct = Math.min(100, Math.round((present / nc.max_slots) * 100));
+      const isFull = present >= nc.max_slots;
+      const fillClass = pct >= 100 ? 'full' : pct >= 70 ? 'warning' : '';
+      return React.createElement("div", { key: nc.id, className: "client-card" + (isFull ? " full" : ""), onClick: () => !isFull && handleCheckin(nc) },
+        React.createElement("div", { className: "client-name" }, "🏪 " + (nc.client ? nc.client.name : nc.client_id)),
+        React.createElement("div", { className: "slots-info" },
+          React.createElement("div", { className: "slots-bar" }, React.createElement("div", { className: "slots-fill " + fillClass, style: { width: pct + "%" } })),
+          React.createElement("span", { className: "slots-text" }, present + "/" + nc.max_slots + " entregadores")),
+        isFull ? React.createElement("div", { style: { fontSize: 13, color: '#E53935', fontWeight: 600 } }, "Vagas esgotadas")
+               : React.createElement("button", { style: { marginTop: 4, background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' } }, "Estou aqui 📍")
+      );
+    })
+  );
+}
+
+function HubLeaderBanner({ courier, checkins, clients, orders }) {
+  const active = checkins.filter(c => !c.checked_out_at);
+  return React.createElement("div", { style: { padding: '12px 16px', background: '#EDE7F6', borderBottom: '2px solid #6A1B9A', display: 'flex', flexDirection: 'column', gap: 10 } },
+    React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      React.createElement("span", { className: "hub-badge" }, "HUB LEADER"),
+      React.createElement("span", { style: { fontSize: 13, color: '#4A148C', fontWeight: 600 } }, "Visão geral da rede")),
+    clients.map(nc => {
+      const couriersHere = active.filter(c => c.client_id === nc.client_id).length;
+      const ordersHere = orders.filter(o => o.client_id === nc.client_id && o.status === 'available').length;
+      const ratio = couriersHere === 0 ? '⚠️' : ordersHere > couriersHere * 2 ? '🔴' : ordersHere > couriersHere ? '🟡' : '🟢';
+      return React.createElement("div", { key: nc.id, style: { background: 'white', border: '1px solid #CE93D8', borderRadius: 10, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 } },
+        React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+          React.createElement("span", { style: { fontWeight: 700, fontSize: 14 } }, nc.client ? nc.client.name : '?'),
+          React.createElement("span", { style: { fontSize: 18 } }, ratio)),
+        React.createElement("div", { style: { display: 'flex', gap: 16, fontSize: 13, flexWrap: 'wrap' } },
+          React.createElement("span", null, "🍳 ", React.createElement("strong", null, ordersHere), " em preparo"),
+          React.createElement("span", null, "🛵 ", React.createElement("strong", null, couriersHere), "/" + nc.max_slots + " entregadores"),
+          couriersHere > 0 && React.createElement("span", { style: { fontWeight: 700, color: ordersHere/couriersHere > 2 ? '#C62828' : ordersHere/couriersHere > 1 ? '#E65100' : '#2E7D32' } }, "coef. " + (ordersHere/couriersHere).toFixed(1) + " ped/ent"),
+          couriersHere === 0 && ordersHere > 0 && React.createElement("span", { style: { fontWeight: 700, color: '#C62828' } }, "⚠️ sem entregadores"))
+      );
+    })
+  );
+}
+
+function CQOrderCard({ order, courierId, onAccept, onDeliver }) {
+  const items = (order.platform_payload && order.platform_payload.items) ? order.platform_payload.items : [];
+  const isMyOrder = courierId && order.entregador_id === courierId;
+  return React.createElement("div", { className: "cq-order-card" + (isMyOrder ? " mine" : "") },
+    React.createElement("div", { className: "cq-order-header" },
+      React.createElement("span", { className: "cq-platform-badge" }, (order.platform || 'pedido').toUpperCase()),
+      React.createElement("span", { className: "cq-order-id" }, "#" + order.platform_order_id),
+      React.createElement("span", { className: "cq-status-badge " + cqStatusClass(order.status) }, cqStatusLabel(order.status))),
+    React.createElement("div", null, React.createElement("div", { className: "cq-neighborhood" }, "📍 " + order.neighborhood_label), React.createElement("div", { className: "cq-street" }, order.street)),
+    React.createElement("div", { className: "cq-order-meta" },
+      React.createElement("span", { className: "cq-price-tag" }, "R$ " + Number(order.courier_price).toFixed(2)),
+      React.createElement("span", { className: "cq-items-preview" }, items.map(i => i.qty + "x " + i.name).join(' · '))),
+    courierId && order.status === 'available' && !isMyOrder && React.createElement("button", {
+      style: { background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer', width: '100%' },
+      onClick: () => onAccept(order)
+    }, "Aceitar entrega")
+  );
+}
+
+function CQCodeModal({ order, onConfirm, onClose }) {
+  const [code, setCode] = React.useState('');
+  const [loadingCode, setLoadingCode] = React.useState(false);
+  return React.createElement("div", { className: "cq-modal-overlay" },
+    React.createElement("div", { className: "cq-modal-sheet" },
+      React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        React.createElement("h2", { style: { fontSize: 18, fontWeight: 700 } }, "Código de entrega"),
+        React.createElement("button", { onClick: onClose, style: { border: 'none', background: 'none', fontSize: 20, cursor: 'pointer', color: '#999' } }, "✕")),
+      React.createElement("p", { style: { fontSize: 13, color: '#666' } }, "Peça o código ao cliente e digite abaixo:"),
+      React.createElement("input", { className: "code-input", type: "text", maxLength: 6, placeholder: "_ _ _ _", value: code, onChange: e => setCode(e.target.value.toUpperCase()), autoFocus: true }),
+      React.createElement("div", { style: { padding: '12px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, background: '#FFF3E0', color: '#E65100', border: '1px solid #FFB74D' } }, "📦 " + order.neighborhood_label + " — " + order.street),
+      React.createElement("button", {
+        style: { background: code.trim() && !loadingCode ? '#43A047' : '#ccc', color: 'white', padding: '14px 20px', borderRadius: 10, fontSize: 15, fontWeight: 600, border: 'none', cursor: code.trim() && !loadingCode ? 'pointer' : 'not-allowed', width: '100%' },
+        disabled: !code.trim() || loadingCode,
+        onClick: async () => { setLoadingCode(true); await onConfirm(order, code); setLoadingCode(false); }
+      }, loadingCode ? 'Confirmando...' : 'Confirmar entrega')
+    )
+  );
+}
+
+function CourierQueue({ setPage }) {
+  const { profile } = useAuth();
+  const courier = profile;
+  const [checkin, setCQCheckin] = React.useState(null);
+  const [orders, setCQOrders] = React.useState([]);
+  const [checkins, setCQCheckins] = React.useState([]);
+  const [networkClients, setCQNetworkClients] = React.useState([]);
+  const [tab, setCQTab] = React.useState('queue');
+  const [codeModal, setCQCodeModal] = React.useState(null);
+  const [notification, setCQNotification] = React.useState(null);
+  const [cancelAlert, setCQCancelAlert] = React.useState(null);
+  const [loadingCQ, setLoadingCQ] = React.useState(false);
+  const channelRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!courier || !courier.network_id) return;
+    db.from('network_clients').select('*, client:client_id(name)').eq('network_id', courier.network_id).then(({ data }) => setCQNetworkClients(data || []));
+  }, [courier && courier.network_id]);
+
+  React.useEffect(() => {
+    if (!courier) return;
+    setLoadingCQ(true);
+    async function loadOrders() {
+      let query = db.from('platform_orders').select('*').order('created_at', { ascending: false });
+      if (courier.is_hub_leader) {
+        const clientIds = networkClients.map(nc => nc.client_id);
+        if (clientIds.length > 0) query = query.in('client_id', clientIds); else { setCQOrders([]); setLoadingCQ(false); return; }
+      } else if (checkin) {
+        const { data } = await db.from('platform_orders').select('*').or('client_id.eq.' + checkin.client_id + ',and(entregador_id.eq.' + courier.id + ',status.eq.delivering)').order('created_at', { ascending: false });
+        setCQOrders(data || []); setLoadingCQ(false); return;
+      } else {
+        query = query.eq('entregador_id', courier.id).eq('status', 'delivering');
+      }
+      const { data } = await query;
+      setCQOrders(data || []); setLoadingCQ(false);
+    }
+    async function loadCheckins() {
+      const { data } = await db.from('courier_checkins').select('*').is('checked_out_at', null);
+      setCQCheckins(data || []);
+    }
+    loadOrders(); loadCheckins();
+    if (channelRef.current) db.removeChannel(channelRef.current);
+    const ch = db.channel('cq_orders_' + courier.id)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'platform_orders' }, payload => {
+        const updated = payload.new;
+        if (updated && updated.entregador_id === courier.id && updated.status === 'cancelled_by_platform') { setCQCancelAlert('⚠️ Pedido ' + updated.platform_order_id + ' cancelado!'); setTimeout(() => setCQCancelAlert(null), 7000); }
+        if (payload.eventType === 'INSERT' && updated && updated.status === 'available') { setCQNotification('🆕 Novo pedido em ' + updated.neighborhood_label + '!'); setTimeout(() => setCQNotification(null), 4000); }
+        loadOrders();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'courier_checkins' }, loadCheckins)
+      .subscribe();
+    channelRef.current = ch;
+    return () => db.removeChannel(ch);
+  }, [checkin, courier && courier.id, courier && courier.is_hub_leader, networkClients.length]);
+
+  async function handleAccept(order) {
+    await db.from('platform_orders').update({ status: 'accepted', entregador_id: courier.id, accepted_at: new Date().toISOString() }).eq('id', order.id);
+    setCQNotification('🛵 Pedido aceito! Vá até ' + order.neighborhood_label); setTimeout(() => setCQNotification(null), 6000);
+  }
+  async function handleConfirmCode(order, code) {
+    await db.from('platform_orders').update({ status: 'delivered', delivery_code: code, delivered_at: new Date().toISOString() }).eq('id', order.id);
+    setCQCodeModal(null); setCQNotification('✅ Entrega confirmada!'); setTimeout(() => setCQNotification(null), 4000);
+  }
+  async function handleCheckout(ordersToDeliver) {
+    if (!checkin) return;
+    if (ordersToDeliver && ordersToDeliver.length > 0) await db.from('platform_orders').update({ status: 'delivering' }).in('id', ordersToDeliver.map(o => o.id));
+    await db.from('courier_checkins').update({ checked_out_at: new Date().toISOString() }).eq('id', checkin.id);
+    setCQCheckin(null); setCQOrders([]); setCQNotification('🚀 Saindo! Boa entrega!'); setTimeout(() => setCQNotification(null), 5000);
+  }
+  async function addMockOrder() {
+    const clientId = checkin ? checkin.client_id : networkClients.length > 0 ? networkClients[0].client_id : null;
+    if (!clientId) { setCQNotification('Faça check-in primeiro'); setTimeout(() => setCQNotification(null), 3000); return; }
+    const hoods = [{key:'ICARAI',label:'Icaraí',street:'Rua Lemos Cunha, 200',courier_price:8,client_price:10},{key:'CHARITAS',label:'Charitas',street:'Estrada Fróes, 410',courier_price:10,client_price:12},{key:'CENTRO',label:'Centro',street:'Rua XV de Novembro, 55',courier_price:8,client_price:11}];
+    const n = hoods[Math.floor(Math.random() * hoods.length)];
+    await db.from('platform_orders').insert({ platform: 'mock', platform_order_id: 'MOCK-' + Math.floor(Math.random()*9000+1000), client_id: clientId, status: 'available', neighborhood_key: n.key, neighborhood_label: n.label, street: n.street, courier_price: n.courier_price, client_price: n.client_price, platform_payload: { items: [{ name: 'Burrito Cali', qty: Math.floor(Math.random()*3)+1 }] } });
+  }
+
+  if (!courier) return React.createElement("div", { className: "loading" }, "Carregando...");
+  const available = orders.filter(o => o.status === 'available');
+  const myActive = orders.filter(o => o.entregador_id === courier.id && (o.status === 'accepted' || o.status === 'delivering'));
+  const history = orders.filter(o => ['delivered','cancelled','cancelled_by_platform','cancelled_after_delivery'].includes(o.status));
+  const isReady = courier.is_hub_leader || checkin;
+  const myDelivering = orders.filter(o => o.entregador_id === courier.id && o.status === 'delivering');
+
+  return React.createElement("div", { className: "screen" },
+    cancelAlert && React.createElement("div", { className: "cancel-alert-cq" }, cancelAlert),
+    React.createElement("div", { className: "topbar" },
+      React.createElement("button", { className: "back-btn", onClick: () => setPage('courier') }, "←"),
+      React.createElement("div", { style: { flex: 1 } },
+        React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "📦 Fila de Pedidos"),
+        React.createElement("div", { style: { fontSize: 11, opacity: 0.8 } }, isReady ? (checkin ? "Check-in: " + cqTimeSince(checkin.checked_in_at) : "Hub Leader") : "Faça check-in para começar")),
+      courier.is_hub_leader && React.createElement("span", { className: "hub-badge" }, "HUB LEADER")),
+    courier.is_hub_leader && networkClients.length > 0 && React.createElement(HubLeaderBanner, { courier, checkins, clients: networkClients, orders }),
+    checkin && !courier.is_hub_leader && React.createElement("div", { className: "checkin-banner" },
+      React.createElement("div", null,
+        React.createElement("div", { className: "checkin-info" }, "📍 " + ((networkClients.find(nc => nc.client_id === checkin.client_id) || {}).client || {}).name || 'Cliente'),
+        React.createElement("div", { className: "checkin-time" }, "Check-in há " + cqTimeSince(checkin.checked_in_at)))),
+    notification && React.createElement("div", { style: { padding: '8px 16px' } }, React.createElement("div", { style: { padding: '12px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, background: '#E8F5E9', color: '#2E7D32', border: '1px solid #A5D6A7' } }, notification)),
+    !isReady && myDelivering.length > 0 && React.createElement("div", { style: { padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 } },
+      React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: '#E65100', textTransform: 'uppercase' } }, "🚀 Entregas em andamento"),
+      myDelivering.map(o => React.createElement("div", { key: o.id, className: "active-order" },
+        React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } }, o.neighborhood_label),
+        React.createElement("div", { style: { fontSize: 12, color: '#555' } }, o.street),
+        React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: '#2E7D32' } }, "R$ " + Number(o.courier_price).toFixed(2)),
+        React.createElement("button", { style: { background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }, onClick: () => setCQCodeModal(o) }, "🔑 Confirmar entrega com código")))),
+    !isReady
+      ? React.createElement(CheckinScreen, { courier, onCheckin: setCQCheckin })
+      : React.createElement(React.Fragment, null,
+          React.createElement("div", { className: "content" },
+            loadingCQ && React.createElement("div", { className: "loading" }, "Carregando pedidos..."),
+            tab === 'queue' && !loadingCQ && React.createElement(React.Fragment, null,
+              myActive.length > 0 && React.createElement("div", { className: "active-order" },
+                React.createElement("div", { className: "active-order-label" }, "🛵 " + (myActive[0].status === 'delivering' ? 'Em entrega' : 'Pedido(s) aceito(s)') + " — " + myActive.length + " pedido(s)"),
+                myActive.map(o => React.createElement("div", { key: o.id, style: { borderTop: '1px solid #C8E6C9', paddingTop: 10, marginTop: 2 } },
+                  React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' } },
+                    React.createElement("div", null, React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } }, o.neighborhood_label), React.createElement("div", { style: { fontSize: 12, color: '#555' } }, o.street)),
+                    React.createElement("span", { style: { fontWeight: 800, color: '#2E7D32', fontSize: 15 } }, "R$ " + Number(o.courier_price).toFixed(2))),
+                  o.status === 'delivering' && React.createElement("button", { style: { marginTop: 8, background: '#185FA5', color: 'white', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }, onClick: () => setCQCodeModal(o) }, "🔑 Confirmar entrega"))),
+                myActive.some(o => o.status === 'accepted') && checkin && React.createElement("button", { style: { marginTop: 4, background: '#185FA5', color: 'white', padding: '14px 20px', borderRadius: 10, fontSize: 15, fontWeight: 600, border: 'none', cursor: 'pointer', width: '100%' }, onClick: () => handleCheckout(myActive.filter(o => o.status === 'accepted')) }, "🚀 Saí — iniciar entrega")),
+              React.createElement("div", { style: { display: 'flex', justifyContent: 'flex-end' } }, React.createElement("button", { style: { background: '#f5f5f5', color: '#333', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }, onClick: addMockOrder }, "+ Simular pedido")),
+              available.length === 0 && myActive.length === 0 && React.createElement("div", { className: "empty" }, React.createElement("div", { className: "eico" }, "🛵"), "Nenhum pedido em preparo"),
+              available.map(o => React.createElement(CQOrderCard, { key: o.id, order: o, courierId: courier.id, onAccept: handleAccept, onDeliver: () => setCQCodeModal(o) }))),
+            tab === 'history' && !loadingCQ && React.createElement(React.Fragment, null,
+              React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: '#999', textTransform: 'uppercase', letterSpacing: 0.5 } }, "Histórico (" + history.length + ")"),
+              history.length === 0 && React.createElement("div", { className: "empty" }, React.createElement("div", { className: "eico" }, "📋"), "Nenhuma entrega ainda"),
+              history.map(o => React.createElement(CQOrderCard, { key: o.id, order: o, courierId: courier.id, onAccept: handleAccept })))),
+          React.createElement("div", { style: { display: 'flex', borderTop: '1px solid #eee', background: 'white' } },
+            ['queue','history'].map(t => React.createElement("button", { key: t, style: { flex: 1, padding: '12px 4px 10px', textAlign: 'center', fontSize: 11, color: tab === t ? '#E53935' : '#999', cursor: 'pointer', border: 'none', background: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }, onClick: () => setCQTab(t) }, React.createElement("span", { style: { fontSize: 20 } }, t === 'queue' ? '🏠' : '📋'), t === 'queue' ? 'Fila' : 'Histórico')))),
+    codeModal && React.createElement(CQCodeModal, { order: codeModal, onConfirm: handleConfirmCode, onClose: () => setCQCodeModal(null) })
+  );
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(AuthProvider, null, /*#__PURE__*/React.createElement(ToastProvider, null, /*#__PURE__*/React.createElement(App, null))));
 }
 function tryStart(n){if(window.React&&window.React.useState&&window.ReactDOM){startApp();}else if(n>0){setTimeout(()=>tryStart(n-1),50);}else{document.getElementById('root').innerHTML='<div style="color:red;padding:20px">Erro ao carregar. Recarregue a p\u00e1gina.</div>';}}
