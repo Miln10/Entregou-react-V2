@@ -2772,200 +2772,485 @@ function ClientClosing({
     profile
   } = useAuth();
   const toast = useToast();
-  const [tab, setTab] = useState('pending');
-  const [summaries, setSummaries] = useState([]);
+  const [tab, setTab] = useState('pending'); // pending | history
+  const [pending, setPending] = useState([]);
+  const [myClosings, setMyClosings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [contesting, setContesting] = useState(null);
-  const [contestQty, setContestQty] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const loadSummaries = async () => {
+  const [contestQty, setContestQty] = useState({});
+  const [contestDate, setContestDate] = useState('');
+  useEffect(() => {
+    loadAll();
+  }, [profile]);
+  const loadAll = async () => {
+    if (!profile) return;
     setLoading(true);
-    const statuses = tab === 'pending' ? ['awaiting_client'] : ['matched', 'diverged', 'agreed'];
-    const r = await db.from('daily_summaries').select('*').eq('client_id', profile.id).in('status', statuses).order('date', {
+    // Lançamentos do entregador aguardando confirmação do cliente
+    const {
+      data: pend
+    } = await db.from('daily_closings').select('*').eq('client_id', profile.id).eq('status', 'pending').not('courier_submission', 'is', null).order('date', {
       ascending: false
     });
-    if (!r.error) setSummaries(r.data || []);
+    setPending(pend || []);
+    // Histórico
+    const {
+      data: hist
+    } = await db.from('daily_closings').select('*').eq('client_id', profile.id).in('status', ['matched', 'diverged', 'agreed', 'disputed']).order('date', {
+      ascending: false
+    }).limit(30);
+    setMyClosings(hist || []);
     setLoading(false);
   };
-
-  useEffect(() => {
-    if (profile) loadSummaries();
-  }, [tab, profile && profile.id]);
-
-  const confirmar = async s => {
-    setSaving(true);
-    const r = await db.from('daily_summaries').update({
-      client_total: s.courier_total,
+  const confirm = async closing => {
+    // 1. Atualiza o fechamento como confirmado
+    await db.from('daily_closings').update({
+      client_submission: closing.courier_submission,
       status: 'matched',
+      agreed_data: closing.courier_submission,
       updated_at: localTimestamp()
-    }).eq('id', s.id);
-    if (r.error) toast('Erro: ' + r.error.message);else {
-      toast('✅ Confirmado!');
-      await loadSummaries();
-    }
-    setSaving(false);
-  };
+    }).eq('id', closing.id);
 
-  const contestar = async () => {
-    if (!contesting || contestQty === '') return;
-    setSaving(true);
-    const qty = parseInt(contestQty);
-    const status = qty === contesting.courier_total ? 'matched' : 'diverged';
-    const r = await db.from('daily_summaries').update({
-      client_total: qty,
-      status,
+    // 2. Cria pedidos em orders para alimentar o financeiro
+    await createOrdersFromClosing(closing, closing.courier_submission);
+    toast('✅ Fechamento confirmado! Entregas registradas no financeiro.');
+    loadAll();
+  };
+  const createOrdersFromClosing = async (closing, submission) => {
+    if (!(submission !== null && submission !== void 0 && submission.length)) return;
+    // Busca tabela de preços do cliente
+    const priceItems = await getPriceTableForClient(profile.id);
+    const ml = getSetting('multinivel', {
+      total_pool: 1.00,
+      nivel1: 0.70,
+      nivel2_para_nivel0: 0.30
+    });
+    const pool = +ml.total_pool || 1.00;
+    const L1 = +ml.nivel1 || 0.70;
+    const L2L0 = +ml.nivel2_para_nivel0 || 0.30;
+    const week = getWeekBoundsFromDate(closing.date);
+    const ws = week.startStr,
+      we = week.endStr;
+
+    // Busca dados do entregador para multinível
+    const {
+      data: courier
+    } = await db.from('users').select('id,name,courier_number,referred_by,phone').eq('id', closing.courier_id).single();
+    const rows = [];
+    for (const item of submission) {
+      const priceItem = priceItems.find(p => (p.neighborhood_key || p.key) === item.key);
+      const clientPrice = +((priceItem === null || priceItem === void 0 ? void 0 : priceItem.client_price) || (priceItem === null || priceItem === void 0 ? void 0 : priceItem.cliente) || 0);
+      const courierPrice = +((priceItem === null || priceItem === void 0 ? void 0 : priceItem.courier_price) || (priceItem === null || priceItem === void 0 ? void 0 : priceItem.entregador) || 0);
+      const gestora = Math.max(0, +(clientPrice - courierPrice - pool).toFixed(2));
+      for (let i = 0; i < item.qty; i++) {
+        rows.push({
+          client_id: profile.id,
+          client_name: profile.name,
+          courier_id: closing.courier_id,
+          courier_name: closing.courier_name,
+          courier_number: closing.courier_number || null,
+          courier_phone: (courier === null || courier === void 0 ? void 0 : courier.phone) || null,
+          pickup_addr: profile.address || 'Manual',
+          delivery_addr: item.label || item.key,
+          neighborhood: item.key,
+          item_desc: 'Fechamento diário — ' + fmtDate(closing.date),
+          price: clientPrice,
+          courier_price: courierPrice,
+          gestora_amount: gestora,
+          status: 'done',
+          created_at: closing.date + 'T12:00:00',
+          updated_at: localTimestamp()
+        });
+      }
+    }
+    if (!rows.length) return;
+    const {
+      data: created,
+      error
+    } = await db.from('orders').insert(rows).select('id,courier_id,courier_price,gestora_amount,neighborhood');
+    if (error) {
+      console.error('Erro ao criar pedidos:', error);
+      return;
+    }
+
+    // Processa bônus multinível para cada pedido
+    if (courier !== null && courier !== void 0 && courier.referred_by) {
+      const {
+        data: l1
+      } = await db.from('users').select('id,name,can_refer,referred_by').eq('id', courier.referred_by).single();
+      if (l1 !== null && l1 !== void 0 && l1.can_refer) {
+        for (const order of created || []) {
+          let dist = 0;
+          await db.from('referral_bonuses').insert({
+            earner_id: l1.id,
+            earner_name: l1.name,
+            source_courier_id: courier.id,
+            source_courier_name: courier.name,
+            order_id: order.id,
+            level: 1,
+            amount: L1,
+            week_start: ws,
+            week_end: we
+          });
+          dist += L1;
+          if (l1.referred_by) {
+            const {
+              data: l0
+            } = await db.from('users').select('id,name,can_refer').eq('id', l1.referred_by).single();
+            if (l0 !== null && l0 !== void 0 && l0.can_refer) {
+              await db.from('referral_bonuses').insert({
+                earner_id: l0.id,
+                earner_name: l0.name,
+                source_courier_id: courier.id,
+                source_courier_name: courier.name,
+                order_id: order.id,
+                level: 0,
+                amount: L2L0,
+                week_start: ws,
+                week_end: we
+              });
+              dist += L2L0;
+            }
+          }
+          // Atualiza gestora com o que sobrou
+          const remaining = Math.max(0, +(pool - dist).toFixed(2));
+          if (remaining > 0) {
+            await db.from('orders').update({
+              gestora_amount: order.gestora_amount + remaining
+            }).eq('id', order.id);
+          }
+        }
+      }
+    }
+  };
+  const startContest = closing => {
+    const qty = {};
+    (closing.courier_submission || []).forEach(s => {
+      qty[s.key] = s.qty;
+    });
+    setContestQty(qty);
+    setContestDate(closing.date);
+    setContesting(closing);
+  };
+  const submitContest = async () => {
+    if (!contesting) return;
+    const submission = Object.entries(contestQty).filter(([, v]) => +v > 0).map(([k, v]) => {
+      const orig = (contesting.courier_submission || []).find(x => x.key === k);
+      return {
+        key: k,
+        label: (orig === null || orig === void 0 ? void 0 : orig.label) || k,
+        qty: +v
+      };
+    });
+    const cs = contesting.courier_submission || [];
+    const dateChanged = contestDate !== contesting.date;
+    const qtyMatch = submission.every(s => {
+      const cf = cs.find(x => x.key === s.key);
+      return cf && cf.qty === s.qty;
+    }) && cs.every(s => {
+      const cl = submission.find(x => x.key === s.key);
+      return cl && cl.qty === s.qty;
+    });
+    const match = qtyMatch && !dateChanged;
+    await db.from('daily_closings').update({
+      client_submission: submission,
+      date: contestDate || contesting.date,
+      status: match ? 'matched' : 'diverged',
+      ...(match && {
+        agreed_data: submission
+      }),
       updated_at: localTimestamp()
     }).eq('id', contesting.id);
-    if (r.error) toast('Erro: ' + r.error.message);else {
-      toast(status === 'matched' ? '✅ Valores conferem!' : '⚠️ Diverg\xeancia registrada');
-      setContesting(null);
-      setContestQty('');
-      await loadSummaries();
-    }
-    setSaving(false);
+    if (match) await createOrdersFromClosing({
+      ...contesting,
+      date: contestDate || contesting.date,
+      courier_submission: submission
+    }, submission);
+    if (dateChanged) toast('📅 Data corrigida para ' + contestDate + (match ? ' ✅ Entregas registradas!' : ' ⚠️ Aguardando entregador confirmar.'));else toast(match ? '✅ Confirmado! Entregas registradas no financeiro.' : '⚠️ Contestação enviada ao entregador.');
+    setContesting(null);
+    setContestQty({});
+    setContestDate('');
+    loadAll();
   };
-
-  const statusLabel = s => ({
-    pending: '⏳ Aguardando confirma\xe7\xe3o',
-    matched: '✅ Confirmado',
-    diverged: '⚠️ Diverg\xeancia',
-    agreed: '✅ Resolvido'
-  })[s] || s;
-
-  const ts = t => ({
-    padding: '6px 16px',
-    borderRadius: 20,
-    border: 'none',
-    background: tab === t ? 'var(--blue)' : 'var(--bg2)',
-    color: tab === t ? '#fff' : 'var(--text)',
-    cursor: 'pointer',
-    fontWeight: tab === t ? 700 : 400,
-    fontSize: 14
-  });
-
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      maxWidth: 500,
-      margin: '0 auto'
+  const statusInfo = {
+    pending: {
+      icon: '⏳',
+      label: 'Aguardando',
+      color: 'var(--amber)',
+      bg: 'var(--amber-l)'
+    },
+    matched: {
+      icon: '✅',
+      label: 'Confirmado',
+      color: 'var(--green)',
+      bg: 'var(--green-l)'
+    },
+    diverged: {
+      icon: '⚠️',
+      label: 'Divergência',
+      color: 'var(--red)',
+      bg: 'var(--red-l)'
+    },
+    agreed: {
+      icon: '✅',
+      label: 'Acordado',
+      color: 'var(--green)',
+      bg: 'var(--green-l)'
+    },
+    disputed: {
+      icon: '🔴',
+      label: 'Em disputa',
+      color: 'var(--red)',
+      bg: 'var(--red-l)'
     }
+  };
+  const ts = t => ({
+    padding: '9px 14px',
+    fontSize: 13,
+    fontWeight: tab === t ? 600 : 400,
+    cursor: 'pointer',
+    color: tab === t ? 'var(--blue)' : 'var(--text2)',
+    borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
+    background: 'none',
+    border: 'none',
+    borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
+    fontFamily: 'var(--font)'
+  });
+  return /*#__PURE__*/React.createElement("div", {
+    className: "screen"
+  }, /*#__PURE__*/React.createElement(Topbar, {
+    title: "Fechamento di\xE1rio",
+    onBack: () => setPage('client-orders'),
+    badge: "Cliente",
+    badgeClass: "bc"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "scroll"
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
-      gap: 8,
-      padding: '12px 16px 0'
+      borderBottom: '1px solid var(--border)'
     }
   }, /*#__PURE__*/React.createElement("button", {
     style: ts('pending'),
     onClick: () => setTab('pending')
-  }, "Pendente"), /*#__PURE__*/React.createElement("button", {
+  }, "Pendentes ", pending.length > 0 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: 4,
+      background: 'var(--red)',
+      color: 'white',
+      borderRadius: 10,
+      fontSize: 10,
+      padding: '1px 6px',
+      fontWeight: 700
+    }
+  }, pending.length)), /*#__PURE__*/React.createElement("button", {
     style: ts('history'),
     onClick: () => setTab('history')
-  }, "Hist\xf3rico")), loading ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ns",
-    style: {
-      margin: 16
-    }
-  }, "Carregando…") : !summaries.length ? /*#__PURE__*/React.createElement("div", {
-    className: "notice ns",
-    style: {
-      margin: 16
-    }
-  }, tab === 'pending' ? "Nenhum fechamento pendente." : "Sem hist\xf3rico.") : /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '12px 16px'
-    }
-  }, summaries.map(s => {
-    const isContesting = contesting && contesting.id === s.id;
+  }, "Hist\xF3rico")), loading ? /*#__PURE__*/React.createElement(Loading, null) : /*#__PURE__*/React.createElement(React.Fragment, null, tab === 'pending' && /*#__PURE__*/React.createElement(React.Fragment, null, pending.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
+    icon: "\u2705",
+    text: "Nenhum lan\xE7amento pendente. Os entregadores ainda n\xE3o enviaram o fechamento de hoje."
+  }) : pending.map(cl => {
+    const total = (cl.courier_submission || []).reduce((a, x) => a + x.qty, 0);
     return /*#__PURE__*/React.createElement("div", {
-      key: s.id,
+      key: cl.id,
+      className: "ocard",
       style: {
-        background: 'var(--card)',
-        borderRadius: 10,
-        padding: 14,
-        marginBottom: 12,
-        boxShadow: '0 1px 4px rgba(0,0,0,.08)'
+        margin: '8px 14px'
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         justifyContent: 'space-between',
-        marginBottom: 6
+        alignItems: 'flex-start',
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700
+      }
+    }, cl.courier_name, cl.courier_number ? ' #' + cl.courier_number : ''), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text2)'
+      }
+    }, fmtDate(cl.date), " \xB7 ", total, " entrega", total !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        padding: '3px 9px',
+        borderRadius: 20,
+        fontWeight: 600,
+        background: 'var(--amber-l)',
+        color: 'var(--amber)'
+      }
+    }, "\u23F3 Aguarda voc\xEA")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: 'var(--bg2)',
+        borderRadius: 'var(--rs)',
+        padding: '10px 12px',
+        marginBottom: 12
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
+        fontSize: 11,
         fontWeight: 700,
-        fontSize: 16
-      }
-    }, fmtDate(s.date)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: 'var(--text2)'
-      }
-    }, statusLabel(s.status))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 28,
-        fontWeight: 700,
-        textAlign: 'center',
-        color: 'var(--blue)',
-        padding: '8px 0'
-      }
-    }, s.courier_total, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 13,
-        fontWeight: 400,
-        marginLeft: 6
-      }
-    }, "entregas")), s.client_total != null && s.client_total !== s.courier_total ? /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: 'center',
-        fontSize: 12,
-        color: 'var(--red)',
+        color: 'var(--text2)',
+        textTransform: 'uppercase',
+        letterSpacing: '.06em',
         marginBottom: 6
       }
-    }, "Seu total informado: ", s.client_total) : null, tab === 'pending' ? !isContesting ? /*#__PURE__*/React.createElement("div", {
+    }, "Lan\xE7ado pelo entregador"), (cl.courier_submission || []).map((s, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        fontSize: 13,
+        padding: '3px 0',
+        borderBottom: i < (cl.courier_submission || []).length - 1 ? '1px solid var(--border)' : ''
+      }
+    }, /*#__PURE__*/React.createElement("span", null, s.label), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 700
+      }
+    }, s.qty, "x"))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        fontSize: 14,
+        fontWeight: 700,
+        marginTop: 8,
+        paddingTop: 6,
+        borderTop: '1px solid var(--border)'
+      }
+    }, /*#__PURE__*/React.createElement("span", null, "Total"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: 'var(--green)'
+      }
+    }, total, " entregas"))), (contesting === null || contesting === void 0 ? void 0 : contesting.id) === cl.id ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: 'var(--text2)',
+        textTransform: 'uppercase',
+        letterSpacing: '.06em',
+        marginBottom: 8
+      }
+    }, "Seu lan\xE7amento (ajuste se necess\xE1rio)"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: {
+        fontSize: 12,
+        color: 'var(--text2)',
+        display: 'block',
+        marginBottom: 4
+      }
+    }, "\uD83D\uDCC5 Corrigir data (se necess\xE1rio)"), /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      value: contestDate,
+      onChange: e => setContestDate(e.target.value),
+      style: {
+        fontSize: 13,
+        padding: '6px 10px'
+      }
+    }), contestDate !== cl.date && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--amber)',
+        marginTop: 4
+      }
+    }, "\u26A0\uFE0F Data ser\xE1 alterada de ", fmtDate(cl.date), " para ", fmtDate(contestDate))), (cl.courier_submission || []).map(s => /*#__PURE__*/React.createElement("div", {
+      key: s.key,
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '8px 0',
+        borderBottom: '1px solid var(--border)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        fontSize: 13,
+        fontWeight: 500
+      }
+    }, s.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setContestQty(q => ({
+        ...q,
+        [s.key]: Math.max(0, (q[s.key] || 0) - 1)
+      })),
+      style: {
+        width: 26,
+        height: 26,
+        borderRadius: '50%',
+        border: '1px solid var(--border)',
+        background: 'var(--bg2)',
+        cursor: 'pointer',
+        fontSize: 14,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }
+    }, "\u2212"), /*#__PURE__*/React.createElement("input", {
+      type: "number",
+      min: "0",
+      value: contestQty[s.key] || 0,
+      onChange: e => setContestQty(q => ({
+        ...q,
+        [s.key]: Math.max(0, parseInt(e.target.value) || 0)
+      })),
+      style: {
+        width: 46,
+        textAlign: 'center',
+        padding: '4px',
+        fontSize: 14,
+        fontWeight: 700
+      }
+    }), /*#__PURE__*/React.createElement("button", {
+      onClick: () => setContestQty(q => ({
+        ...q,
+        [s.key]: (q[s.key] || 0) + 1
+      })),
+      style: {
+        width: 26,
+        height: 26,
+        borderRadius: '50%',
+        border: '1px solid var(--blue-l)',
+        background: 'var(--blue-l)',
+        cursor: 'pointer',
+        fontSize: 14,
+        color: 'var(--blue)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }
+    }, "+")))), /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         gap: 8,
-        marginTop: 10
+        marginTop: 12
       }
     }, /*#__PURE__*/React.createElement("button", {
-      className: "btn accept",
+      className: "btn-sm progress",
       style: {
         flex: 1,
-        fontSize: 14
+        padding: '9px'
       },
-      onClick: () => confirmar(s),
-      disabled: saving
-    }, "✅ Confirmar"), /*#__PURE__*/React.createElement("button", {
-      className: "btn-sm danger",
+      onClick: submitContest
+    }, "Enviar meu lan\xE7amento"), /*#__PURE__*/React.createElement("button", {
+      className: "btn-sm",
       style: {
-        padding: '8px 14px'
+        flex: 1,
+        padding: '9px'
       },
-      onClick: () => {
-        setContesting(s);
-        setContestQty('');
-      }
-    }, "Contestar")) : /*#__PURE__*/React.createElement("div", {
-      style: {
-        marginTop: 10
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "fgrp",
-      style: {
-        marginBottom: 8
-      }
-    }, /*#__PURE__*/React.createElement("label", {
-      className: "flabel"
-    }, "Quantas entregas voc\xea recebeu?"), /*#__PURE__*/React.createElement("input", {
-      type: "number",
-      min: 0,
-      value: contestQty,
-      onChange: e => setContestQty(e.target.value),
-      className: "fgrp",
-      placeholder: "ex: 10",
-      autoFocus: true
-    })), /*#__PURE__*/React.createElement("div", {
+      onClick: () => setContesting(null)
+    }, "Cancelar"))) : /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         gap: 8
@@ -2973,169 +3258,184 @@ function ClientClosing({
     }, /*#__PURE__*/React.createElement("button", {
       className: "btn btn-blue",
       style: {
-        flex: 1
+        flex: 1,
+        padding: '10px',
+        fontSize: 13
       },
-      onClick: contestar,
-      disabled: saving || !contestQty
-    }, saving ? "Salvando…" : "Enviar"), /*#__PURE__*/React.createElement("button", {
-      className: "btn",
-      onClick: () => {
-        setContesting(null);
-        setContestQty('');
+      onClick: () => confirm(cl)
+    }, "\u2705 Confirmar tudo"), /*#__PURE__*/React.createElement("button", {
+      className: "btn-sm",
+      style: {
+        flex: 1,
+        padding: '10px',
+        fontSize: 13
+      },
+      onClick: () => startContest(cl)
+    }, "\u270F\uFE0F Contestar")));
+  })), tab === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, myClosings.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
+    icon: "\uD83D\uDCCB",
+    text: "Nenhum fechamento no hist\xF3rico ainda."
+  }) : myClosings.map(cl => {
+    const si = statusInfo[cl.status] || {
+      icon: '?',
+      label: cl.status,
+      color: 'var(--text2)',
+      bg: 'var(--bg2)'
+    };
+    const total = (cl.agreed_data || cl.courier_submission || []).reduce((a, x) => a + x.qty, 0);
+    return /*#__PURE__*/React.createElement("div", {
+      key: cl.id,
+      className: "ocard",
+      style: {
+        margin: '0 14px 8px'
       }
-    }, "Cancelar"))) : null);
-  })));
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center'
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600
+      }
+    }, cl.courier_name, cl.courier_number ? ' #' + cl.courier_number : ''), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text2)'
+      }
+    }, fmtDate(cl.date), " \xB7 ", total, " entrega", total !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        padding: '3px 9px',
+        borderRadius: 20,
+        fontWeight: 600,
+        background: si.bg,
+        color: si.color
+      }
+    }, si.icon, " ", si.label)), cl.status === 'diverged' && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--red)',
+        marginTop: 6
+      }
+    }, "Entregador: ", (cl.courier_submission || []).reduce((a, x) => a + x.qty, 0), " \xB7 Voc\xEA: ", (cl.client_submission || []).reduce((a, x) => a + x.qty, 0), " entregas"));
+  })))));
 }
-function ApproveTab({
-  loadAll,
-  profile
-}) {
+
+// ===== COURIER FIN (unified) =====
+
+// ===== APPROVE TAB - Level 0 approves pending_l0 closings =====
+function ApproveTab({ loadAll, profile }) {
   const toast = useToast();
-  const [groups, setGroups] = useState([]);
-  const [histGroups, setHistGroups] = useState([]);
+  const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [closing, setClosing] = useState({});
-  const [tab, setTab] = useState('pending');
+  const [editing, setEditing] = useState(null);
+  const [editQty, setEditQty] = useState({});
 
-  const loadGroups = async () => {
-    setLoading(true);
-    const [pendingRes, histRes] = await Promise.all([
-      db.from('daily_closings').select('*').eq('status', 'pending_l0').order('date', { ascending: false }),
-      db.from('daily_closings').select('*').in('status', ['pending', 'matched', 'diverged', 'agreed', 'disputed', 'approved']).order('date', { ascending: false }).limit(300)
-    ]);
-
-    // Group pending by date + client
-    const gMap = {};
-    (pendingRes.data || []).forEach(cl => {
-      const key = cl.date + '__' + cl.client_id;
-      if (!gMap[key]) gMap[key] = { date: cl.date, client_id: cl.client_id, client_name: cl.client_name, closings: [] };
-      gMap[key].closings.push(cl);
-    });
-    // Adiciona closings do próprio N0 (status=pending) ao total do grupo
-    (histRes.data || []).filter(cl => cl.status === 'pending').forEach(cl => {
-      const key = cl.date + '__' + cl.client_id;
-      if (gMap[key]) {
-        if (!gMap[key].n0Closings) gMap[key].n0Closings = [];
-        gMap[key].n0Closings.push(cl);
-      }
-    });
-    setGroups(Object.values(gMap).sort((a, b) => b.date.localeCompare(a.date)));
-
-    // Group history by date + courier
-    const hMap = {};
-    (histRes.data || []).forEach(cl => {
-      const key = cl.date + '__' + cl.courier_id;
-      if (!hMap[key]) hMap[key] = { date: cl.date, courier_id: cl.courier_id, courier_name: cl.courier_name, closings: [] };
-      hMap[key].closings.push(cl);
-    });
-    setHistGroups(Object.values(hMap).sort((a, b) => b.date.localeCompare(a.date) || (a.courier_name || '').localeCompare(b.courier_name || '')));
-    setLoading(false);
-  };
-
-  const useEffectRef = useEffect(() => { loadGroups(); }, []);
-
-  const fecharDia = async (date, client_id) => {
-    const key = date + '_' + client_id;
-    setClosing(prev => ({ ...prev, [key]: true }));
-    const { error } = await db.rpc('fechar_dia', { p_date: date, p_client_id: client_id });
-    setClosing(prev => ({ ...prev, [key]: false }));
-    if (error) {
-      toast('error', 'Erro: ' + error.message);
-    } else {
-      toast('success', 'Dia fechado com sucesso!');
-      loadGroups();
-      if (loadAll) loadAll();
+  const loadPending = useCallback(async () => {
+    if (!profile) return;
+    // Buscar N1 diretos
+    const { data: directTeam } = await db.from('users').select('id,name,courier_number,referred_by').eq('role', 'courier').eq('referred_by', profile.id);
+    const n1Ids = (directTeam || []).map(u => u.id);
+    // Buscar N2 (indicados dos N1)
+    let n2Ids = [];
+    if (n1Ids.length) {
+      const { data: n2Team } = await db.from('users').select('id').eq('role', 'courier').in('referred_by', n1Ids);
+      n2Ids = (n2Team || []).map(u => u.id);
     }
+    // Incluir o próprio N0 + N1 + N2
+    const allIds = [profile.id, ...n1Ids, ...n2Ids];
+    const { data } = await db.from('daily_closings').select('*').in('courier_id', allIds).eq('status', 'pending_l0').order('date', { ascending: false });
+    setPending(data || []);
+    setLoading(false);
+  }, [profile]);
+
+  useEffect(() => { loadPending(); }, [loadPending]);
+
+  useEffect(() => {
+    if (!profile) return;
+    const sub = db.channel('approve-l0-' + profile.id)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closings' }, loadPending)
+      .subscribe();
+    return () => db.removeChannel(sub);
+  }, [profile, loadPending]);
+
+  const approve = async (cl) => {
+    await db.from('daily_closings').update({ status: 'pending', updated_at: localTimestamp() }).eq('id', cl.id);
+    toast('✅ Aprovado! Enviado para o cliente confirmar.');
+    loadPending(); if (loadAll) loadAll();
   };
 
-  const ts = t => ({
-    padding: '6px 16px', borderRadius: 20, border: 'none',
-    background: tab === t ? 'var(--blue)' : 'var(--bg2)',
-    color: tab === t ? '#fff' : 'var(--text)',
-    cursor: 'pointer', fontWeight: tab === t ? 700 : 400, fontSize: 14
-  });
+  const startEdit = (cl) => {
+    const qty = {};
+    (cl.courier_submission || []).forEach(s => { qty[s.key] = s.qty; });
+    setEditQty(qty);
+    setEditing(cl.id);
+  };
 
-  const statusLabel = s => ({ pending: '⏳ Adm', matched: '✅ OK', diverged: '⚠️', agreed: '🤝', disputed: '⚡', approved: '✔' })[s] || s;
+  const saveEdit = async (cl) => {
+    const submission = (cl.courier_submission || []).map(s => ({ ...s, qty: +editQty[s.key] || 0 })).filter(s => s.qty > 0);
+    await db.from('daily_closings').update({ courier_submission: submission, status: 'pending', updated_at: localTimestamp() }).eq('id', cl.id);
+    toast('✅ Editado e aprovado! Enviado para o cliente.');
+    setEditing(null); loadPending(); if (loadAll) loadAll();
+  };
 
-  const fmt = ds => { const [y, m, d] = ds.split('-'); return d + '/' + m + '/' + y; };
+  const reject = async (cl) => {
+    await db.from('daily_closings').update({ status: 'rejected_l0', updated_at: localTimestamp() }).eq('id', cl.id);
+    toast('❌ Lançamento devolvido para o entregador corrigir.');
+    loadPending(); if (loadAll) loadAll();
+  };
 
-  const totalQty = closings => closings.reduce((sum, cl) => sum + (cl.courier_submission || []).reduce((s, it) => s + (it.qty || 0), 0), 0);
+  if (loading) return React.createElement(Loading);
 
-  if (loading) return /*#__PURE__*/React.createElement("div", { style: { padding: 20, color: 'var(--text2)' } }, 'Carregando...');
-
-  return /*#__PURE__*/React.createElement("div", { style: { padding: 16 } },
-    /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 16 } },
-      /*#__PURE__*/React.createElement("button", { style: ts('pending'), onClick: () => setTab('pending') }, '⏳ Pendentes'),
-      /*#__PURE__*/React.createElement("button", { style: ts('history'), onClick: () => setTab('history') }, '📋 Histórico')
-    ),
-
-    tab === 'pending' && (groups.length === 0
-      ? /*#__PURE__*/React.createElement("div", { style: { color: 'var(--text2)', textAlign: 'center', padding: 40 } }, 'Nenhum lançamento pendente')
-      : /*#__PURE__*/React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-          ...groups.map(g => {
-            const key = g.date + '_' + g.client_id;
-            const isClosing = closing[key];
-            const qty = totalQty([...g.closings, ...(g.n0Closings || [])]);
-            return /*#__PURE__*/React.createElement("div", { key, style: { background: 'var(--bg2)', borderRadius: 12, padding: 16 } },
-              /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 } },
-                /*#__PURE__*/React.createElement("div", {},
-                  /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, g.client_name || 'Cliente'),
-                  /*#__PURE__*/React.createElement("div", { style: { color: 'var(--text2)', fontSize: 13 } }, fmt(g.date))
-                ),
-                /*#__PURE__*/React.createElement("div", { style: { textAlign: 'right' } },
-                  /*#__PURE__*/React.createElement("div", { style: { fontSize: 18, fontWeight: 700 } }, qty + ' entregas'),
-                  /*#__PURE__*/React.createElement("div", { style: { color: 'var(--text2)', fontSize: 12 } }, g.closings.length + ' entregador(es)')
+  return React.createElement('div', { style: { padding: '10px 14px 0' } },
+    pending.length === 0
+      ? React.createElement('div', { className: 'notice ni' }, '✅ Nenhum lançamento aguardando aprovação.')
+      : pending.map(cl => {
+          const sub = cl.courier_submission || [];
+          const total = sub.reduce((a, s) => a + s.qty, 0);
+          const isEditing = editing === cl.id;
+          return React.createElement('div', { key: cl.id, className: 'ocard', style: { margin: '0 0 10px' } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 } },
+              React.createElement('div', null,
+                React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, '🛵 ' + cl.courier_name + (cl.courier_number ? ' #' + cl.courier_number : '')),
+                React.createElement('div', { style: { fontSize: 11, color: 'var(--text2)' } }, fmtDate(cl.date) + ' · ' + cl.client_name)
+              ),
+              React.createElement('span', { style: { fontSize: 10, padding: '2px 8px', borderRadius: 20, background: 'var(--amber-l)', color: 'var(--amber)', fontWeight: 600 } }, '⏳ Aguardando')
+            ),
+            isEditing
+              ? React.createElement('div', null,
+                  React.createElement('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 6, fontWeight: 600 } }, 'EDITAR QUANTIDADES'),
+                  sub.map(s => React.createElement('div', { key: s.key, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+                    React.createElement('div', { style: { flex: 1, fontSize: 12 } }, s.label),
+                    React.createElement('button', { onClick: () => setEditQty(q => ({ ...q, [s.key]: Math.max(0, (q[s.key] || 0) - 1) })), style: { width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--bg2)', cursor: 'pointer', fontSize: 14 } }, '−'),
+                    React.createElement('span', { style: { width: 28, textAlign: 'center', fontSize: 14, fontWeight: 700 } }, editQty[s.key] || 0),
+                    React.createElement('button', { onClick: () => setEditQty(q => ({ ...q, [s.key]: (q[s.key] || 0) + 1 })), style: { width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--blue-l)', background: 'var(--blue-l)', cursor: 'pointer', fontSize: 14, color: 'var(--blue)' } }, '+')
+                  )),
+                  React.createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8 } },
+                    React.createElement('button', { className: 'btn-sm accept', style: { flex: 1, padding: 8 }, onClick: () => saveEdit(cl) }, '✅ Salvar e aprovar'),
+                    React.createElement('button', { className: 'btn-sm', onClick: () => setEditing(null) }, 'Cancelar')
+                  )
                 )
-              ),
-              /*#__PURE__*/React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 } },
-                ...g.closings.map(cl => {
-                  const q = (cl.courier_submission || []).reduce((s, it) => s + (it.qty || 0), 0);
-                  return /*#__PURE__*/React.createElement("div", { key: cl.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' } },
-                    /*#__PURE__*/React.createElement("span", {}, cl.courier_name || 'Entregador'),
-                    /*#__PURE__*/React.createElement("span", { style: { fontWeight: 600 } }, q + ' entregas')
-                  );
-                })
-              ),
-              /*#__PURE__*/React.createElement("button", {
-                onClick: () => fecharDia(g.date, g.client_id),
-                disabled: isClosing,
-                style: { width: '100%', padding: '10px', background: isClosing ? 'var(--bg3)' : 'var(--blue)', color: '#fff', border: 'none', borderRadius: 8, cursor: isClosing ? 'default' : 'pointer', fontWeight: 700, fontSize: 15 }
-              }, isClosing ? '⌛ Fechando...' : '⚡ Fechar Dia')
-            );
-          })
-        )
-    ),
-
-    tab === 'history' && (histGroups.length === 0
-      ? /*#__PURE__*/React.createElement("div", { style: { color: 'var(--text2)', textAlign: 'center', padding: 40 } }, 'Nenhum registro encontrado')
-      : /*#__PURE__*/React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-          ...histGroups.map(g => {
-            const qty = totalQty(g.closings);
-            return /*#__PURE__*/React.createElement("div", { key: g.date + '_' + g.courier_id, style: { background: 'var(--bg2)', borderRadius: 10, padding: 14 } },
-              /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 8 } },
-                /*#__PURE__*/React.createElement("div", {},
-                  /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700 } }, g.courier_name || 'Entregador'),
-                  /*#__PURE__*/React.createElement("div", { style: { color: 'var(--text2)', fontSize: 13 } }, fmt(g.date))
-                ),
-                /*#__PURE__*/React.createElement("div", { style: { textAlign: 'right' } },
-                  /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, qty + ' entregas'),
-                  /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: 'var(--text2)' } }, g.closings.length + ' cliente(s)')
+              : React.createElement('div', null,
+                  sub.map((s, i) => React.createElement('div', { key: i, style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text2)', padding: '2px 0' } },
+                    React.createElement('span', null, s.label),
+                    React.createElement('span', { style: { fontWeight: 600, color: 'var(--text)' } }, s.qty + 'x')
+                  )),
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 4, marginBottom: 10 } },
+                    React.createElement('span', null, 'Total'),
+                    React.createElement('span', null, total + ' entregas')
+                  ),
+                  React.createElement('div', { style: { display: 'flex', gap: 6 } },
+                    React.createElement('button', { className: 'btn-sm accept', style: { flex: 1, padding: 8 }, onClick: () => approve(cl) }, '✅ Aprovar'),
+                    React.createElement('button', { className: 'btn-sm progress', style: { flex: 1, padding: 8 }, onClick: () => startEdit(cl) }, '✏️ Editar'),
+                    React.createElement('button', { className: 'btn-sm danger', onClick: () => reject(cl) }, '❌')
+                  )
                 )
-              ),
-              /*#__PURE__*/React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-                ...g.closings.map(cl => {
-                  const q = (cl.courier_submission || []).reduce((s, it) => s + (it.qty || 0), 0);
-                  return /*#__PURE__*/React.createElement("div", { key: cl.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', borderTop: '1px solid var(--border)' } },
-                    /*#__PURE__*/React.createElement("span", {}, cl.client_name || 'Cliente'),
-                    /*#__PURE__*/React.createElement("span", { style: { color: 'var(--text2)', fontSize: 12 } }, statusLabel(cl.status)),
-                    /*#__PURE__*/React.createElement("span", { style: { fontWeight: 600 } }, q + ' entregas')
-                  );
-                })
-              )
-            );
-          })
-        )
-    )
+          );
+        })
   );
 }
 
@@ -3149,9 +3449,7 @@ function CourierFin({
   const [tab, setTab] = useState('week');
   const [weekData, setWeekData] = useState(null);
   const [closings, setClosings] = useState([]);
-  const [commissions, setCommissions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selWeek, setSelWeek] = useState(0);
   // Closing form state
   const [selClient, setSelClient] = useState('');
   const [clients, setClients] = useState([]);
@@ -3168,8 +3466,8 @@ function CourierFin({
 
   const loadAll = useCallback(async () => {
     if (!profile) return;
-    const wC = getWeekBounds(selWeek);
-    const wP = getWeekBounds(selWeek - 1);
+    const wC = getWeekBounds(0);
+    const wP = getWeekBounds(-1);
     const from = wP.startStr;
     // Buscar indicados (só para N0)
     if (!profile.referred_by) {
@@ -3178,13 +3476,13 @@ function CourierFin({
       const indirect = (teamData||[]).filter(c => direct.find(n => n.id === c.referred_by));
       setMyCouriers([...direct, ...indirect]);
     }
-    const [ordRes, closRes, cliRes, payRes, ceRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
+    const [ordRes, closRes, cliRes, payRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }), db.from('daily_closings').select('*').eq('courier_id', profile.id).gte('date', (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-01'; })()).order('date', {
       ascending: false
     }), db.from('users').select('id,name').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
-    }).limit(5), db.from('commission_entries').select('id,date,commission_amount,relationship,source_id').eq('earner_id', profile.id).gte('date', (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-01'; })()).order('date', {ascending:false})]);
+    }).limit(5)]);
     const orders = ordRes.data || [];
     const currOrders = orders.filter(o => {
       var _o$created_at, _o$created_at2;
@@ -3194,10 +3492,8 @@ function CourierFin({
       var _o$created_at3, _o$created_at4;
       return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
     });
-    const currEarningsOrds = currOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
-    const currEarningsCls = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
-    const currEarnings = currEarningsOrds + currEarningsCls;
-    const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status !== 'pending_l0').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const currEarnings = currOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const prevEarnings = prevOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
     // Build week days
@@ -3230,10 +3526,9 @@ function CourierFin({
       days
     });
     setClosings(closRes.data || []);
-    setCommissions(ceRes.data || []);
     setClients(cliRes.data || []);
     setLoading(false);
-  }, [profile, selWeek]);
+  }, [profile]);
   useEffect(() => {
     loadAll();
   }, [loadAll]);
@@ -3297,7 +3592,7 @@ function CourierFin({
       client_name: (client === null || client === void 0 ? void 0 : client.name) || '',
       date,
       courier_submission: submission,
-      status: isLevel0 ? 'pending' : 'pending_l0',
+      status: 'pending_l0',
       created_at: localTimestamp(),
       updated_at: localTimestamp()
     };
@@ -3444,32 +3739,11 @@ function CourierFin({
   }, "\uD83D\uDD17 Indica\xE7\xE3o"), /*#__PURE__*/React.createElement("button", {
     style: ts('historico'),
     onClick: () => setTab('historico')
-  }, "\uD83D\uDCC5 Hist\xF3rico"), !profile.referred_by && /*#__PURE__*/React.createElement("button", {style: ts('approve'), onClick: () => setTab('approve')}, "\u2705 Aprovar")), tab === 'approve' && !profile.referred_by && React.createElement(ApproveTab, {loadAll: loadAll, profile: profile}), tab === 'week' && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCC5 Hist\xF3rico")), tab === 'approve' && !profile.referred_by && React.createElement(ApproveTab, {loadAll: loadAll, profile: profile}), tab === 'week' && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '14px 14px 0'
     }
   }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      gap: 8,
-      marginBottom: 12,
-      overflowX: 'auto'
-    }
-  }, [[0,'Esta semana'],[-1,'Semana anterior'],[-2,'Há 2 semanas']].map(([v,l]) => /*#__PURE__*/React.createElement("button", {
-    key: v,
-    onClick: () => setSelWeek(v),
-    style: {
-      padding: '4px 12px',
-      borderRadius: 20,
-      border: '1.5px solid var(--blue)',
-      background: selWeek === v ? 'var(--blue)' : 'transparent',
-      color: selWeek === v ? '#fff' : 'var(--blue)',
-      fontSize: 12,
-      cursor: 'pointer',
-      whiteSpace: 'nowrap',
-      fontFamily: 'var(--font)'
-    }
-  }, l))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: 'var(--text2)',
@@ -3484,13 +3758,13 @@ function CourierFin({
     style: {
       color: 'var(--green)'
     }
-  }, fmtMoney(currEarnings + (commissions||[]).filter(c=>c.date>=wC.startStr&&c.date<=wC.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0))), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(currEarnings)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "a receber"), (commissions||[]).filter(c=>c.date>=wC.startStr&&c.date<=wC.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0)>0&&/*#__PURE__*/React.createElement("div",{style:{fontSize:10,color:'var(--text2)',marginTop:4,textAlign:'center'}},/*#__PURE__*/React.createElement("span",{style:{color:'var(--green)'}},fmtMoney(currEarnings)+" prop.")," + ",/*#__PURE__*/React.createElement("span",{style:{color:'var(--purple)'}},fmtMoney((commissions||[]).filter(c=>c.date>=wC.startStr&&c.date<=wC.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0))+" rede"))), /*#__PURE__*/React.createElement("div", {
+  }, "a receber")), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, currOrders.length + (closings||[]).filter(cl=>cl.date>=wC.startStr&&cl.date<=wC.endStr&&cl.status!=='pending_l0').reduce((a,cl)=>a+((cl.courier_submission||[]).reduce((b,s)=>b+(s.qty||0),0)),0)), /*#__PURE__*/React.createElement("div", {
+  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3734,7 +4008,7 @@ function CourierFin({
           color: si.color
         }
       }, si.icon, " ", total, " entregas \u2014 ", si.label)));
-    })), !day.isFuture && (!hasClosing || (!profile.referred_by && myCouriers.length > 0)) && isLaunching && /*#__PURE__*/React.createElement("div", {
+    })), !day.isFuture && !hasClosing && isLaunching && /*#__PURE__*/React.createElement("div", {
       style: {
         padding: '10px 12px',
         borderTop: '1px solid var(--border)'
@@ -3845,7 +4119,7 @@ function CourierFin({
         width: '100%',
         textAlign: 'center'
       }
-    }, "Cancelar")), !day.isFuture && (!hasClosing || (!profile.referred_by && myCouriers.length > 0)) && !isLaunching && /*#__PURE__*/React.createElement("div", {
+    }, "Cancelar")), !day.isFuture && !hasClosing && !isLaunching && /*#__PURE__*/React.createElement("div", {
       style: {
         padding: '8px 12px',
         borderTop: '1px solid var(--border)'
@@ -3877,17 +4151,13 @@ function CourierFin({
     return Object.values(wks).sort((a,b) => b.startStr.localeCompare(a.startStr)).map(wk => {
       const totalE = wk.closings.reduce((a,cl) => a+(cl.courier_submission||[]).reduce((b,s)=>b+s.qty,0), 0);
       const ganhos = allOrds.filter(o => { const d=(o.created_at||'').slice(0,10); return d>=wk.startStr&&d<=wk.endStr; }).reduce((a,o)=>a+(+o.courier_price||0),0);
-      const ganhosClosings = wk.closings.reduce((a,cl)=>a+(+cl.courier_value||0),0);
-      const totalGanhos = ganhos + ganhosClosings;
-      const redeGanhos = (commissions||[]).filter(c=>c.date>=wk.startStr&&c.date<=wk.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0);
       return /*#__PURE__*/React.createElement("div", { key: wk.startStr, style: { border: '1px solid var(--border)', borderRadius: 'var(--r)', marginBottom: 10, overflow: 'hidden' } },
-        /*#__PURE__*/React.createElement("div", { style: { padding: '10px 12px', background: 'var(--bg2)' } },
-          /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 6 } }, "Semana ", fmtDate(wk.startStr), " \u2014 ", fmtDate(wk.endStr)),
-          /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
-            /*#__PURE__*/React.createElement("span", { style: { padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 500, background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text2)', display:'inline-flex', alignItems:'center', gap:4 } }, /*#__PURE__*/React.createElement("svg",{width:11,height:11,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:2.5},/*#__PURE__*/React.createElement("circle",{cx:12,cy:8,r:4}),/*#__PURE__*/React.createElement("path",{d:"M4 20c0-4 3.6-7 8-7s8 3 8 7"})), totalE, " entregas"),
-            totalGanhos > 0 && /*#__PURE__*/React.createElement("span", { style: { padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: '#EDFAF3', border: '1px solid var(--green)', color: 'var(--green)' } }, fmtMoney(totalGanhos)),
-            redeGanhos > 0 && /*#__PURE__*/React.createElement("span", { style: { padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: '#EEEDFE', border: '1px solid var(--purple)', color: 'var(--purple)', display:'inline-flex', alignItems:'center', gap:4 } }, /*#__PURE__*/React.createElement("svg",{width:11,height:11,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:2.5},/*#__PURE__*/React.createElement("path",{d:"M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"}),/*#__PURE__*/React.createElement("circle",{cx:9,cy:7,r:4}),/*#__PURE__*/React.createElement("path",{d:"M23 21v-2a4 4 0 0 0-3-3.87"}),/*#__PURE__*/React.createElement("path",{d:"M16 3.13a4 4 0 0 1 0 7.75"})), fmtMoney(redeGanhos), " rede")
-          )
+        /*#__PURE__*/React.createElement("div", { style: { padding: '10px 12px', background: 'var(--bg2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700 } }, "Semana ", fmtDate(wk.startStr), " \u2014 ", fmtDate(wk.endStr)),
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, totalE, " entrega(s) confirmada(s)")
+          ),
+          ganhos > 0 && /*#__PURE__*/React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: 'var(--green)' } }, fmtMoney(ganhos))
         ),
         wk.closings.map(cl => {
           const totalCl = (cl.courier_submission||[]).reduce((a,s)=>a+s.qty,0);
@@ -3896,11 +4166,7 @@ function CourierFin({
               /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 500 } }, fmtDate(cl.date), " \xB7 ", cl.client_name||'Cliente'),
               /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, (cl.courier_submission||[]).map((s,i) => /*#__PURE__*/React.createElement("span", { key: i, style: { marginRight: 6 } }, s.label||s.key, ": ", s.qty)))
             ),
-            /*#__PURE__*/React.createElement("div", { style: { textAlign: 'right' } },
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)' } }, totalCl, " entregas"),
-            (+cl.courier_value||0) > 0 && /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: 'var(--green)' } }, fmtMoney(+cl.courier_value||0)),
-            (()=>{ const d=(commissions||[]).filter(c=>c.date===cl.date).reduce((a,c)=>a+(+c.commission_amount||0),0); return d>0&&/*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--purple)' } }, "+ ", fmtMoney(d), " rede"); })()
-          )
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: 'var(--text2)', whiteSpace: 'nowrap' } }, totalCl, " entregas")
           );
         })
       );
@@ -4992,11 +5258,11 @@ function ClientFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1);
     const from = getWeekBounds(-8).startStr;
-    const [or, pa, ds, cl] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
+    const [or, pa] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }), db.from('payments').select('*').eq('type', 'client_charge').eq('reference_id', profile.id).order('created_at', {
       ascending: false
-    }).limit(20), db.from('daily_summaries').select('date,client_total').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr), db.from('daily_closings').select('courier_submission,status').eq('client_id', profile.id).gte('date', wP.startStr).lte('date', wP.endStr).eq('status','agreed')]);
+    }).limit(20)]);
     const orders = or.data || [];
     const payments = pa.data || [];
     const currOrders = orders.filter(o => {
@@ -5028,9 +5294,7 @@ function ClientFin({
       currOrders,
       prevOrders,
       currTotal: sum(currOrders),
-      prevTotal: (ds.data || []).reduce((a, d) => a + (+d.client_total || 0), 0) || sum(prevOrders),
-      prevQty: (cl.data || []).reduce((a, c) => a + (c.courier_submission || []).reduce((s, i) => s + (+i.qty || 0), 0), 0),
-      get prevCostPerDelivery() { const q = this.prevQty; return q > 0 ? Math.round(this.prevTotal / q * 100) / 100 : 0; },
+      prevTotal: sum(prevOrders),
       byCourier: Object.values(byCourier),
       payments,
       prevPayment
@@ -5077,8 +5341,6 @@ function ClientFin({
     prevOrders,
     currTotal,
     prevTotal,
-    prevQty,
-    prevCostPerDelivery,
     byCourier,
     payments,
     prevPayment
@@ -5283,9 +5545,9 @@ function ClientFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, prevQty), /*#__PURE__*/React.createElement("div", {
+  }, prevOrders.length), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "entregas"))), /*#__PURE__*/React.createElement("div", {style: {display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px", background:"var(--surface2)", borderRadius:"var(--rs)", marginTop:8}}, /*#__PURE__*/React.createElement("div", {style: {fontSize:12, color:"var(--text2)"}}, "custo por entrega"), /*#__PURE__*/React.createElement("div", {style: {fontSize:16, fontWeight:700, color:"var(--blue)"}}, prevCostPerDelivery > 0 ? fmtMoney(prevCostPerDelivery) : "\u2014")), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
+  }, "entregas"))), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
     className: "notice ns",
     style: {
       margin: '10px 0'
@@ -5433,15 +5695,17 @@ function AdminSettings({
       nivel2_para_nivel0: String(mlData.value.nivel2_para_nivel0 || 0.30),
       total_pool: String(mlData.value.total_pool || 1.00)
     });
-    // Carrega bairros da tabela padrão no DB, fallback hardcode
-    const { data: defTableForBairros } = await db.from('price_tables').select('id').eq('is_default', true).maybeSingle();
-    const _hardcodeBairros = () => setBairros(Object.entries(BAIRRO_PRECO).map(([key, v]) => { var _B3; return { key, label: ((_B3 = BAIRROS.find(([k]) => k === key)) === null || _B3 === void 0 ? void 0 : _B3[1]) || key, cliente: v.cliente, entregador: v.entregador }; }));
-    if (defTableForBairros) {
-      const { data: dbBairros } = await db.from('price_items').select('neighborhood_key,neighborhood_label,client_price,courier_price').eq('price_table_id', defTableForBairros.id);
-      if (dbBairros && dbBairros.length) {
-        setBairros(dbBairros.map(item => ({ key: item.neighborhood_key, label: item.neighborhood_label, cliente: +item.client_price, entregador: +item.courier_price })));
-      } else { _hardcodeBairros(); }
-    } else { _hardcodeBairros(); }
+    // Carrega bairros padrão do hardcode
+    const defaultBairros = Object.entries(BAIRRO_PRECO).map(([key, v]) => {
+      var _BAIRROS$find3;
+      return {
+        key,
+        label: ((_BAIRROS$find3 = BAIRROS.find(([k]) => k === key)) === null || _BAIRROS$find3 === void 0 ? void 0 : _BAIRROS$find3[1]) || key,
+        cliente: v.cliente,
+        entregador: v.entregador
+      };
+    });
+    setBairros(defaultBairros);
     // Carrega redes
     const {
       data: nets
@@ -5564,43 +5828,6 @@ function AdminSettings({
     badge: "Admin",
     badgeClass: "ba"
   }), /*#__PURE__*/React.createElement(Loading, null));
-  const saveDefaultPrices = async () => {
-    setSaving(true);
-    try {
-      const { data: defTable } = await db.from('price_tables').select('id').eq('is_default', true).maybeSingle();
-      let tableId = defTable ? defTable.id : null;
-      if (!tableId) {
-        const { data: nt } = await db.from('price_tables').insert({ name: 'Padrao' }).select().single();
-        tableId = nt.id;
-      }
-      await db.from('price_items').delete().eq('price_table_id', tableId);
-      const items = bairros.map(b => ({
-        price_table_id: tableId,
-        neighborhood_key: b.key,
-        neighborhood_label: b.label,
-        client_price: +(b.cliente || 0),
-        courier_price: +(b.entregador || 0)
-      }));
-      await db.from('price_items').delete().eq('price_table_id', tableId);
-      const { error } = await db.from('price_items').insert(items);
-      if (error) throw error;
-      toast('success', 'Tabela salva com sucesso!');
-    } catch (e) { toast('error', 'Erro: ' + e.message); }
-    setSaving(false);
-  };
-  const exportPricesCSV = () => {
-    const hdr = ['Bairro', 'Preco Cliente (R$)', 'Preco Entregador (R$)'].join(',');
-    const rows = bairros.map(b => ['"' + (b.label || b.key) + '"', +(b.cliente || 0), +(b.entregador || 0)].join(','));
-    const csv = [hdr, ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const anchor = Object.assign(document.createElement('a'), { href: url, download: 'tabela_precos.csv' });
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
-  };
-  
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement(Topbar, {
@@ -5758,7 +5985,6 @@ function AdminSettings({
         };
         setBairros(nb);
       },
-      onBlur: saveDefaultPrices,
       style: {
         width: 72,
         textAlign: 'center',
@@ -5781,7 +6007,6 @@ function AdminSettings({
         };
         setBairros(nb);
       },
-      onBlur: saveDefaultPrices,
       style: {
         width: 72,
         textAlign: 'center',
@@ -5902,12 +6127,7 @@ function AdminSettings({
       fontSize: 11,
       color: 'var(--text2)'
     }
-  }, clientBairros.length, " bairro", clientBairros.length !== 1 ? 's' : '', " configurado", clientBairros.length !== 1 ? 's' : '')),
-  /*#__PURE__*/React.createElement("div", { style: { display: 'flex', alignItems: 'center', marginTop: 8, marginBottom: 4 } },
-  saving ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 12, color: 'var(--text2)', flex: 1 } }, '💾 Salvando...') : /*#__PURE__*/React.createElement("span", { style: { flex: 1 } }),
-  /*#__PURE__*/React.createElement("button", { className: "btn", onClick: exportPricesCSV }, '📥 Exportar CSV')
-),
- /*#__PURE__*/React.createElement("button", {
+  }, clientBairros.length, " bairro", clientBairros.length !== 1 ? 's' : '', " configurado", clientBairros.length !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("button", {
     className: "btn-sm accept",
     onClick: () => {
       setClientBairros(prev => [...prev, {
@@ -10098,7 +10318,6 @@ function AdminRelatorio({
   const [networks, setNetworks] = useState([]);
   const [couriers, setCouriers] = useState([]);
   const [clients, setClients] = useState([]);
-  const [commissions, setCommissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState('week');
   const [customFrom, setCustomFrom] = useState(localDateStr());
@@ -10144,19 +10363,13 @@ function AdminRelatorio({
       from,
       to
     } = getPeriodRange();
-    const [ordRes, netRes, couRes, cliRes, dcRes, dsRes, ceRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
+    const [ordRes, netRes, couRes, cliRes] = await Promise.all([db.from('orders').select('id,client_id,client_name,courier_id,courier_name,courier_number,price,courier_price,gestora_amount,status,created_at,neighborhood,item_desc,pickup_addr,delivery_addr').eq('status', 'done').gte('created_at', from + 'T00:00:00').lte('created_at', to + 'T23:59:59').order('created_at', {
       ascending: false
-    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client'), db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_value,status').gte('date', from).lte('date', to).eq('status','agreed').order('date',{ascending:false}),
-      db.from('daily_summaries').select('id,date,client_id,client_total').gte('date', from).lte('date', to).eq('status','matched'),
-      db.from('commission_entries').select('id,date,earner_id,earner_name,amount,relationship_type,source_courier_id,source_courier_name').gte('date', from).lte('date', to)
-    ]);
-    const dsMap = {};
-    (dsRes.data||[]).forEach(ds => { dsMap[ds.date+'_'+ds.client_id] = +ds.client_total||0; });
-    setOrders([...(ordRes.data||[]),...(dcRes.data||[]).map(dc=>({id:'dc_'+dc.id,client_id:dc.client_id,client_name:dc.client_name,courier_id:dc.courier_id,courier_name:dc.courier_name,price:dsMap[dc.date+'_'+dc.client_id]||0,courier_price:+dc.courier_value||0,gestora_amount:0,status:'done',created_at:dc.date+'T12:00:00',neighborhood:'Laçamento',_source:'closing'}))]);
+    }), db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role', 'courier'), db.from('users').select('id,name,network_id').eq('role', 'client')]);
+    setOrders(ordRes.data || []);
     setNetworks(netRes.data || []);
     setCouriers(couRes.data || []);
     setClients(cliRes.data || []);
-    setCommissions(ceRes.data || []);
     setLoading(false);
   }, [period, customFrom, customTo]);
   useEffect(() => {
@@ -10211,7 +10424,6 @@ function AdminRelatorio({
   const totalClient = filtered.reduce((a, o) => a + (+o.price || 0), 0);
   const totalCourier = filtered.reduce((a, o) => a + (+o.courier_price || 0), 0);
   const totalGestora = filtered.reduce((a, o) => a + (+o.gestora_amount || 0), 0);
-  const totalCommission = (commissions||[]).reduce((a,c)=>a+(+c.amount||0),0);
   const totalApp = filtered.filter(o => !isManual(o)).length;
   const totalManual = filtered.filter(o => isManual(o)).length;
 
@@ -10233,10 +10445,6 @@ function AdminRelatorio({
     byCourier[k].client += +o.price || 0;
     byCourier[k].courier += +o.courier_price || 0;
     byCourier[k].gestora += +o.gestora_amount || 0;
-  });
-  (commissions||[]).forEach(ce => {
-    const k = ce.earner_id;
-    if (byCourier[k]) { byCourier[k].commission = (byCourier[k].commission||0) + (+ce.amount||0); }
   });
 
   // Group by client
@@ -10453,11 +10661,21 @@ function AdminRelatorio({
   }, n.name)))), loading ? /*#__PURE__*/React.createElement(Loading, null) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'grid',
-      gridTemplateColumns: 'repeat(2,1fr)',
+      gridTemplateColumns: 'repeat(3,1fr)',
       gap: 6,
       padding: '0 14px 10px'
     }
   }, /*#__PURE__*/React.createElement("div", {
+    className: "mcard"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mval",
+    style: {
+      fontSize: 16,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(totalClient)), /*#__PURE__*/React.createElement("div", {
+    className: "mlbl"
+  }, "receita")), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval",
@@ -10473,11 +10691,11 @@ function AdminRelatorio({
     className: "mval",
     style: {
       fontSize: 16,
-      color: 'var(--purple)'
+      color: 'var(--amber)'
     }
-  }, fmtMoney(totalCommission)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(totalGestora)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "de indicados"))), /*#__PURE__*/React.createElement("div", {
+  }, "gestora"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
       gap: 6,
@@ -10604,11 +10822,21 @@ function AdminRelatorio({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 13,
+      fontSize: 12,
       fontWeight: 700,
+      color: 'var(--blue)'
+    }
+  }, fmtMoney(o.price)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
       color: 'var(--green)'
     }
-  }, fmtMoney(o.courier_price)))))), tab === 'courier' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byCourier).sort((a, b) => b.count - a.count).map(co => {
+  }, fmtMoney(o.courier_price)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--amber)'
+    }
+  }, fmtMoney(o.gestora_amount)))))), tab === 'courier' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byCourier).sort((a, b) => b.count - a.count).map(co => {
     var _co$name2;
     return /*#__PURE__*/React.createElement("div", {
       key: co.id,
@@ -10657,7 +10885,17 @@ function AdminRelatorio({
         fontWeight: 700,
         color: 'var(--blue)'
       }
-    }, fmtMoney(co.courier)), /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:'var(--purple)'}}, fmtMoney(co.commission||0), /*#__PURE__*/React.createElement("span", {style:{fontSize:9,opacity:0.6,marginLeft:3}}, "de indicados"))));
+    }, fmtMoney(co.client)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--green)'
+      }
+    }, fmtMoney(co.courier)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--amber)'
+      }
+    }, fmtMoney(co.gestora))));
   })), tab === 'client' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byClient).sort((a, b) => b.count - a.count).map(cl => /*#__PURE__*/React.createElement("div", {
     key: cl.id,
     style: {
@@ -10817,558 +11055,6 @@ function AdminRelatorio({
             ))
     )));
 }
-// ===== RELATÓRIO FINANCEIRO ADMIN =====
-function RelatorioFinAdmin() {
-  var toast = useToast();
-  var _rfa0 = React.useState(false), loading = _rfa0[0], setLoading = _rfa0[1];
-  var _rfa1 = React.useState(null), rows = _rfa1[0], setRows = _rfa1[1];
-  var hoje = new Date().toISOString().slice(0,10);
-  var primeiroDiaMes = hoje.slice(0,8)+'01';
-  var _rfa2 = React.useState(primeiroDiaMes), dateFrom = _rfa2[0], setDateFrom = _rfa2[1];
-  var _rfa3 = React.useState(hoje), dateTo = _rfa3[0], setDateTo = _rfa3[1];
-  var loadRel = async function() {
-    setLoading(true);
-    var _r = await db.rpc('get_financial_report', {p_start: dateFrom, p_end: dateTo});
-    if (_r.error) { toast('Erro: ' + _r.error.message); setLoading(false); return; }
-    setRows(_r.data || []);
-    setLoading(false);
-  };
-  var appRows = rows ? rows.filter(function(r){ return r.source_type === 'order'; }) : [];
-  var closingRows = rows ? rows.filter(function(r){ return r.source_type === 'closing'; }) : [];
-  var referralRows = rows ? rows.filter(function(r){ return r.source_type === 'referral'; }) : [];
-  var sumF = function(arr, key) { return arr.reduce(function(a, r){ return a + (r[key] ? +r[key] : 0); }, 0); };
-  var totalClient = rows ? sumF(rows.filter(function(r){ return r.source_type !== 'referral'; }), 'total_client') : 0;
-  var totalCourier = rows ? sumF(rows, 'total_courier') : 0;
-  var totalGestora = rows ? sumF(rows.filter(function(r){ return r.source_type !== 'referral'; }), 'total_gestora') : 0;
-  var totalEntregas = appRows.length + closingRows.reduce(function(a, r){ return a + (r.qty || 0); }, 0);
-  return /*#__PURE__*/React.createElement("div", {style: {padding: '14px 14px 0'}},
-    /*#__PURE__*/React.createElement("div", {style: {display: 'flex', gap: 8, marginBottom: 14, alignItems: 'flex-end'}},
-      /*#__PURE__*/React.createElement("div", {style: {flex: 1}}, /*#__PURE__*/React.createElement("label", {className: "flabel"}, "De"), /*#__PURE__*/React.createElement("input", {type: "date", value: dateFrom, onChange: function(e){ setDateFrom(e.target.value); }})),
-      /*#__PURE__*/React.createElement("div", {style: {flex: 1}}, /*#__PURE__*/React.createElement("label", {className: "flabel"}, "Até"), /*#__PURE__*/React.createElement("input", {type: "date", value: dateTo, onChange: function(e){ setDateTo(e.target.value); }})),
-      /*#__PURE__*/React.createElement("button", {className: "btn-sm accept", style: {height: 38, padding: '0 16px', marginBottom: 1, whiteSpace: 'nowrap'}, onClick: loadRel, disabled: loading}, loading ? '...' : 'Buscar')
-    ),
-    rows && /*#__PURE__*/React.createElement(React.Fragment, null,
-      /*#__PURE__*/React.createElement("div", {style: {display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6}},
-        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--blue)'}}, fmtMoney(totalClient)), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "total clientes")),
-        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--green)'}}, fmtMoney(totalCourier)), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "total entregadores")),
-        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--amber)'}}, fmtMoney(totalGestora)), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "margem gestora")),
-        /*#__PURE__*/React.createElement("div", {className: "mcard"}, /*#__PURE__*/React.createElement("div", {className: "mval"}, totalEntregas), /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "entregas"))
-      ),
-      rows.length === 0 && /*#__PURE__*/React.createElement("div", {className: "notice ni", style: {margin: '8px 0'}}, "Nenhum registro no período."),
-      appRows.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null,
-        /*#__PURE__*/React.createElement("div", {className: "stitle", style: {padding: '14px 0 6px'}}, "📱 Pedidos App (", appRows.length, ")"),
-        appRows.map(function(r, i){ return /*#__PURE__*/React.createElement("div", {key: i, style: {display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)'}}, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {style: {fontSize: 12, fontWeight: 600}}, r.courier_name, " → ", r.neighborhood || '—'), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--text2)'}}, r.client_name, " · ", fmtDate(r.delivery_date))), /*#__PURE__*/React.createElement("div", {style: {textAlign: 'right'}}, /*#__PURE__*/React.createElement("div", {style: {fontSize: 13, fontWeight: 700, color: 'var(--blue)'}}, fmtMoney(r.total_client)), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--green)'}}, fmtMoney(r.total_courier)))); })
-      ),
-      closingRows.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null,
-        /*#__PURE__*/React.createElement("div", {className: "stitle", style: {padding: '14px 0 6px'}}, "📋 Lançamentos (", closingRows.length, " linhas)"),
-        closingRows.map(function(r, i){ return /*#__PURE__*/React.createElement("div", {key: i, style: {display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)'}}, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {style: {fontSize: 12, fontWeight: 600}}, r.courier_name, " · ", r.neighborhood), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--text2)'}}, r.client_name, " · ", fmtDate(r.delivery_date), " · ", r.qty, " entrega", r.qty !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {style: {textAlign: 'right'}}, /*#__PURE__*/React.createElement("div", {style: {fontSize: 13, fontWeight: 700, color: 'var(--blue)'}}, fmtMoney(r.total_client)), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--green)'}}, fmtMoney(r.total_courier)))); })
-      ),
-      referralRows.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null,
-        /*#__PURE__*/React.createElement("div", {className: "stitle", style: {padding: '14px 0 6px'}}, "🌐 Repasses de rede (", referralRows.length, ")"),
-        referralRows.map(function(r, i){ return /*#__PURE__*/React.createElement("div", {key: i, style: {display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)'}}, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {style: {fontSize: 12, fontWeight: 600}}, r.courier_name), /*#__PURE__*/React.createElement("div", {style: {fontSize: 11, color: 'var(--text2)'}}, r.neighborhood, " · sem. ", fmtDate(r.delivery_date))), /*#__PURE__*/React.createElement("div", {style: {fontSize: 13, fontWeight: 700, color: 'var(--green)'}}, fmtMoney(r.total_courier))); })
-      )
-    ),
-    !rows && !loading && /*#__PURE__*/React.createElement("div", {className: "notice ni", style: {marginTop: 4}}, "Selecione o período e clique em Buscar.")
-  );
-}
-
-function MultiNivelReport() {
-  var toast = useToast();
-  var _now = new Date();
-  var _ym = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0');
-  var [fromDate, setFromDate] = React.useState(_ym + '-01');
-  var [toDate, setToDate] = React.useState(_ym + '-' + String(_now.getDate()).padStart(2,'0'));
-  var [rows, setRows] = React.useState([]);
-  var [loading, setLoading] = React.useState(false);
-
-  var load = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      var [commsRes, closingsRes, defTblRes] = await Promise.all([
-        db.from('commission_entries').select('earner_id,source_id,relationship,commission_amount').gte('date', fromDate).lte('date', toDate),
-        db.from('daily_closings').select('courier_id,courier_name,courier_submission').gte('date', fromDate).lte('date', toDate).eq('status','agreed'),
-        db.from('price_tables').select('id').eq('is_default',true).maybeSingle()
-      ]);
-      var priceMap = {};
-      if (defTblRes.data) {
-        var { data: pis } = await db.from('price_items').select('neighborhood_key,courier_price').eq('price_table_id', defTblRes.data.id);
-        (pis||[]).forEach(function(p){ priceMap[p.neighborhood_key] = +p.courier_price; });
-      }
-      var { data: usersData } = await db.from('users').select('id,name').eq('role','courier');
-      var nameMap = {};
-      (usersData||[]).forEach(function(u){ nameMap[u.id] = u.name; });
-
-      var M = {};
-      var ensure = function(id) {
-        if (!M[id]) M[id] = { id:id, name: nameMap[id]||id.slice(0,8), prod:0, recN1:0, recN2:0, paidN1:0, paidN2:0 };
-      };
-
-      (closingsRes.data||[]).forEach(function(cl) {
-        ensure(cl.courier_id);
-        if (!nameMap[cl.courier_id] && cl.courier_name) M[cl.courier_id].name = cl.courier_name;
-        var sub = cl.courier_submission || [];
-        var val = sub.reduce(function(s,item){ return s + (+(item.qty||0)) * (priceMap[item.neighborhood_key]||0); }, 0);
-        M[cl.courier_id].prod += val;
-      });
-
-      (commsRes.data||[]).forEach(function(ce) {
-        ensure(ce.earner_id); ensure(ce.source_id);
-        var amt = +ce.commission_amount;
-        if (ce.relationship === 'n1') { M[ce.earner_id].recN1 += amt; M[ce.source_id].paidN1 += amt; }
-        else { M[ce.earner_id].recN2 += amt; M[ce.source_id].paidN2 += amt; }
-      });
-
-      setRows(Object.values(M).map(function(m){ return Object.assign({}, m, { net: m.prod + m.recN1 + m.recN2 - m.paidN1 - m.paidN2 }); }).sort(function(a,b){ return b.net - a.net; }));
-    } catch(e) { toast('error', 'Erro: ' + e.message); }
-    setLoading(false);
-  }, [fromDate, toDate]);
-
-  React.useEffect(function(){ load(); }, [load]);
-
-  var fmt = function(v){ return 'R$ ' + (+v).toFixed(2).replace('.',','); };
-  var row = function(label, val, color) {
-    return val === 0 ? null : [
-      /*#__PURE__*/React.createElement("span", { key: label+'l', style:{ color: color||'var(--text1)' } }, label),
-      /*#__PURE__*/React.createElement("span", { key: label+'v', style:{ textAlign:'right', color: color||'var(--text1)' } }, (color==='var(--green)'?'+':color==='var(--red)'?'-':'') + fmt(val))
-    ];
-  };
-
-  return /*#__PURE__*/React.createElement("div", { style:{ padding:'12px 14px 60px' } },
-    /*#__PURE__*/React.createElement("div", { style:{ display:'flex', gap:8, marginBottom:14, alignItems:'flex-end', flexWrap:'wrap' } },
-      /*#__PURE__*/React.createElement("div", null,
-        /*#__PURE__*/React.createElement("div", { style:{ fontSize:11, color:'var(--text2)', marginBottom:4 } }, "De"),
-        /*#__PURE__*/React.createElement("input", { type:"date", value:fromDate, onChange:function(e){ setFromDate(e.target.value); }, style:{ fontSize:13 } })
-      ),
-      /*#__PURE__*/React.createElement("div", null,
-        /*#__PURE__*/React.createElement("div", { style:{ fontSize:11, color:'var(--text2)', marginBottom:4 } }, "Até"),
-        /*#__PURE__*/React.createElement("input", { type:"date", value:toDate, onChange:function(e){ setToDate(e.target.value); }, style:{ fontSize:13 } })
-      ),
-      /*#__PURE__*/React.createElement("button", { className:"btn-sm", onClick:load }, "Atualizar")
-    ),
-    loading ? /*#__PURE__*/React.createElement("div", { className:"notice ni" }, "Carregando...") :
-    rows.length === 0 ? /*#__PURE__*/React.createElement("div", { className:"notice ni" }, "Nenhum movimento no período.") :
-    rows.map(function(m) { return /*#__PURE__*/React.createElement("div", { key:m.id, className:"ocard", style:{ marginBottom:8 } },
-      /*#__PURE__*/React.createElement("div", { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 } },
-        /*#__PURE__*/React.createElement("div", { style:{ fontWeight:700, fontSize:14 } }, "🛵 " + m.name),
-        /*#__PURE__*/React.createElement("div", { style:{ fontWeight:700, fontSize:15, color: m.net >= 0 ? 'var(--green)' : 'var(--red)' } }, fmt(m.net))
-      ),
-      /*#__PURE__*/React.createElement("div", { style:{ fontSize:12, display:'grid', gridTemplateColumns:'1fr auto', gap:'4px 12px', lineHeight:'1.7' } },
-        /*#__PURE__*/React.createElement("span", { style:{ color:'var(--text2)' } }, "Produção própria"),
-        /*#__PURE__*/React.createElement("span", { style:{ textAlign:'right' } }, fmt(m.prod)),
-        row("▲ Recebeu de N1", m.recN1, 'var(--green)'),
-        row("▲ Recebeu de N2", m.recN2, 'var(--green)'),
-        row("▼ Cedeu ao N0 direto", m.paidN1, 'var(--red)'),
-        row("▼ Cedeu ao N0 do N0", m.paidN2, 'var(--red)')
-      )
-    ); })
-  );
-}
-
-function EntregadoresView() {
-  var toast = useToast();
-  var _s0 = React.useState(false),
-    loading = _s0[0],
-    setLoading = _s0[1];
-  var _s1 = React.useState(null),
-    data = _s1[0],
-    setData = _s1[1];
-  var _s2 = React.useState({}),
-    expanded = _s2[0],
-    setExpanded = _s2[1];
-  var hoje = new Date().toISOString().slice(0, 10);
-  var primeiroDiaMes = hoje.slice(0, 8) + '01';
-  var _s3 = React.useState(primeiroDiaMes),
-    dateFrom = _s3[0],
-    setDateFrom = _s3[1];
-  var _s4 = React.useState(hoje),
-    dateTo = _s4[0],
-    setDateTo = _s4[1];
-  var load = async function () {
-    setLoading(true);
-    var _r = await Promise.all([db.from('daily_closings').select('courier_id,courier_name,courier_value,courier_submission,status').gte('date', dateFrom).lte('date', dateTo).eq('status','agreed'), db.from('commission_entries').select('earner_id,source_id,relationship,commission_amount,date').gte('date', dateFrom).lte('date', dateTo)]);
-    var closings = _r[0].data || [];
-    var commissions = _r[1].data || [];
-    var courierMap = {};
-    closings.forEach(function (cl) {
-      var id = cl.courier_id;
-      if (!courierMap[id]) courierMap[id] = {
-        id: id,
-        name: cl.courier_name,
-        qty: 0,
-        earned: 0,
-        commissions: {}
-      };
-      courierMap[id].earned += +cl.courier_value || 0;
-      (cl.courier_submission || []).forEach(function (s) {
-        courierMap[id].qty += +s.qty || 0;
-      });
-    });
-    commissions.forEach(function (c) {
-      var id = c.earner_id;
-      if (!courierMap[id]) courierMap[id] = {
-        id: id,
-        name: '—',
-        qty: 0,
-        earned: 0,
-        commissions: {}
-      };
-      var rel = c.relationship || 'direto';
-      courierMap[id].commissions[rel] = (courierMap[id].commissions[rel] || 0) + (+c.commission_amount || 0);
-      courierMap[id].earned += +c.commission_amount || 0;
-    });
-    var rows = Object.values(courierMap).sort(function (a, b) {
-      return b.earned - a.earned;
-    });
-    setData(rows);
-    setLoading(false);
-  };
-  var toggle = function (id) {
-    setExpanded(function (p) {
-      var n = Object.assign({}, p);
-      n[id] = !n[id];
-      return n;
-    });
-  };
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '14px 14px 0'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      gap: 8,
-      marginBottom: 14,
-      alignItems: 'flex-end'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "De"), /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: dateFrom,
-    onChange: function (e) {
-      setDateFrom(e.target.value);
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "Até"), /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: dateTo,
-    onChange: function (e) {
-      setDateTo(e.target.value);
-    }
-  })), /*#__PURE__*/React.createElement("button", {
-    className: "btn-sm accept",
-    style: {
-      height: 38,
-      padding: '0 16px',
-      marginBottom: 1
-    },
-    onClick: load,
-    disabled: loading
-  }, loading ? '...' : 'Buscar')), data && data.length === 0 && /*#__PURE__*/React.createElement("div", {
-    className: "notice ni"
-  }, "Nenhum dado no período."), data && data.map(function (r) {
-    var hasComm = Object.keys(r.commissions).length > 0;
-    var isOpen = expanded[r.id];
-    return /*#__PURE__*/React.createElement("div", {
-      key: r.id,
-      style: {
-        background: 'var(--surface2)',
-        borderRadius: 'var(--rs)',
-        marginBottom: 8,
-        overflow: 'hidden'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '10px 14px',
-        cursor: hasComm ? 'pointer' : 'default'
-      },
-      onClick: function () {
-        if (hasComm) toggle(r.id);
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700
-      }
-    }, r.name), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, r.qty, " entrega", r.qty !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: 'right'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 16,
-        fontWeight: 700,
-        color: 'var(--green)'
-      }
-    }, fmtMoney(r.earned)), hasComm && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, isOpen ? '▲' : '▼', " ver breakdown"))), isOpen && hasComm && /*#__PURE__*/React.createElement("div", {
-      style: {
-        borderTop: '1px solid var(--border)',
-        padding: '8px 14px 10px'
-      }
-    }, Object.entries(r.commissions).map(function (entry) {
-      return /*#__PURE__*/React.createElement("div", {
-        key: entry[0],
-        style: {
-          display: 'flex',
-          justifyContent: 'space-between',
-          fontSize: 12,
-          padding: '3px 0',
-          color: 'var(--text2)'
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          textTransform: 'capitalize'
-        }
-      }, entry[0]), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: 'var(--green)',
-          fontWeight: 600
-        }
-      }, fmtMoney(entry[1])));
-    })));
-  }), !data && !loading && /*#__PURE__*/React.createElement("div", {
-    className: "notice ni"
-  }, "Selecione o período e clique em Buscar."));
-}
-function TransacoesView() {
-  var toast = useToast();
-  var _s0 = React.useState(false),
-    loading = _s0[0],
-    setLoading = _s0[1];
-  var _s1 = React.useState(null),
-    rows = _s1[0],
-    setRows = _s1[1];
-  var _s2 = React.useState({}),
-    openWeeks = _s2[0],
-    setOpenWeeks = _s2[1];
-  var hoje = new Date().toISOString().slice(0, 10);
-  var mesAtras = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-  var _s3 = React.useState(mesAtras),
-    dateFrom = _s3[0],
-    setDateFrom = _s3[1];
-  var _s4 = React.useState(hoje),
-    dateTo = _s4[0],
-    setDateTo = _s4[1];
-  var getWeekKey = function (dateStr) {
-    var d = new Date(dateStr + 'T12:00:00');
-    var day = d.getDay();
-    var diff = d.getDate() - day + (day === 0 ? -6 : 1);
-    var mon = new Date(d.setDate(diff));
-    return mon.toISOString().slice(0, 10);
-  };
-  var load = async function () {
-    setLoading(true);
-    var _r = await Promise.all([db.from('daily_closings').select('id,date,client_id,client_name,courier_name,courier_value,status').gte('date', dateFrom).lte('date', dateTo).eq('status','agreed').order('date', {
-      ascending: false
-    }), db.from('daily_summaries').select('date,client_id,client_name,client_total').gte('date', dateFrom).lte('date', dateTo).order('date', {
-      ascending: false
-    })]);
-    var closings = _r[0].data || [];
-    var summaries = _r[1].data || [];
-    var sumMap = {};
-    summaries.forEach(function (s) {
-      sumMap[s.date + '__' + s.client_id] = s.client_total;
-    });
-    var enriched = closings.map(function (cl) {
-      return Object.assign({}, cl, {
-        client_total: sumMap[cl.date + '__' + cl.client_id] || 0
-      });
-    });
-    var weekMap = {};
-    enriched.forEach(function (cl) {
-      var wk = getWeekKey(cl.date);
-      if (!weekMap[wk]) weekMap[wk] = {
-        week: wk,
-        rows: [],
-        totalClient: 0,
-        totalCourier: 0
-      };
-      weekMap[wk].rows.push(cl);
-      weekMap[wk].totalClient += +cl.client_total || 0;
-      weekMap[wk].totalCourier += +cl.courier_value || 0;
-    });
-    setRows(Object.values(weekMap).sort(function (a, b) {
-      return b.week.localeCompare(a.week);
-    }));
-    setLoading(false);
-  };
-  var toggleWeek = function (wk) {
-    setOpenWeeks(function (p) {
-      var n = Object.assign({}, p);
-      n[wk] = !n[wk];
-      return n;
-    });
-  };
-  var fmtWeek = function (dateStr) {
-    var d = new Date(dateStr + 'T12:00:00');
-    var sun = new Date(d.getTime() + 6 * 24 * 3600 * 1000);
-    return 'Sem. ' + fmtDate(dateStr) + ' – ' + fmtDate(sun.toISOString().slice(0, 10));
-  };
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '14px 14px 0'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      gap: 8,
-      marginBottom: 14,
-      alignItems: 'flex-end'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "De"), /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: dateFrom,
-    onChange: function (e) {
-      setDateFrom(e.target.value);
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "flabel"
-  }, "Até"), /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: dateTo,
-    onChange: function (e) {
-      setDateTo(e.target.value);
-    }
-  })), /*#__PURE__*/React.createElement("button", {
-    className: "btn-sm accept",
-    style: {
-      height: 38,
-      padding: '0 16px',
-      marginBottom: 1
-    },
-    onClick: load,
-    disabled: loading
-  }, loading ? '...' : 'Buscar')), rows && rows.length === 0 && /*#__PURE__*/React.createElement("div", {
-    className: "notice ni"
-  }, "Nenhuma transação no período."), rows && rows.map(function (wk) {
-    var isOpen = openWeeks[wk.week];
-    return /*#__PURE__*/React.createElement("div", {
-      key: wk.week,
-      style: {
-        background: 'var(--surface2)',
-        borderRadius: 'var(--rs)',
-        marginBottom: 8,
-        overflow: 'hidden'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '10px 14px',
-        cursor: 'pointer'
-      },
-      onClick: function () {
-        toggleWeek(wk.week);
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        fontWeight: 700
-      }
-    }, fmtWeek(wk.week)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, wk.rows.length, " fechamento", wk.rows.length !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: 'right'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 14,
-        fontWeight: 700,
-        color: 'var(--blue)'
-      }
-    }, fmtMoney(wk.totalClient)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--green)'
-      }
-    }, fmtMoney(wk.totalCourier), " entregadores"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, isOpen ? '▲' : '▼'))), isOpen && /*#__PURE__*/React.createElement("div", {
-      style: {
-        borderTop: '1px solid var(--border)'
-      }
-    }, wk.rows.map(function (cl) {
-      return /*#__PURE__*/React.createElement("div", {
-        key: cl.id,
-        style: {
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          padding: '8px 14px',
-          borderBottom: '1px solid var(--border)'
-        }
-      }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 12,
-          fontWeight: 600
-        }
-      }, cl.client_name), /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 11,
-          color: 'var(--text2)'
-        }
-      }, cl.courier_name, " · ", fmtDate(cl.date))), /*#__PURE__*/React.createElement("div", {
-        style: {
-          textAlign: 'right'
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 13,
-          fontWeight: 700,
-          color: 'var(--blue)'
-        }
-      }, fmtMoney(cl.client_total)), /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 11,
-          color: 'var(--green)'
-        }
-      }, fmtMoney(cl.courier_value))));
-    })));
-  }), !rows && !loading && /*#__PURE__*/React.createElement("div", {
-    className: "notice ni"
-  }, "Selecione o período e clique em Buscar."));
-}
-
 function AdminFin({
   setPage
 }) {
@@ -11376,7 +11062,7 @@ function AdminFin({
   const [tab, setTab] = useState('cobrar'); // cobrar | pagar | indicacoes | historico
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selWeek, setSelWeek] = useState(-1); // 0=atual, -1=anterior
+  const [selWeek, setSelWeek] = useState(0); // 0=atual, -1=anterior
   const _nowAF = new Date();
   const _todayAF = _nowAF.getFullYear() + '-' + String(_nowAF.getMonth()+1).padStart(2,'0') + '-' + String(_nowAF.getDate()).padStart(2,'0');
   const _weekAgoAF = (() => { const d = new Date(_nowAF); d.setDate(d.getDate()-6); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); })();
@@ -11388,7 +11074,9 @@ function AdminFin({
   const loadHistA = async (from, to) => {
     if (!from || !to) return;
     setHistLoadingA(true);
-    const { data } = await db.from('daily_closings').select('*').gte('date', from).lte('date', to).order('date',{ascending:false});
+    const sd = from.concat('T00:00:00');
+    const ed = to.concat('T23:59:59');
+    const { data } = await db.from('orders').select('id,created_at,client_id,client_name,courier_id,courier_name,courier_number,neighborhood,price,courier_price,gestora_amount').eq('status','done').gte('created_at', sd).lte('created_at', ed).order('created_at',{ascending:false});
     setHistClosings(data||[]);
     setHistLoadingA(false);
   };
@@ -11401,15 +11089,13 @@ function AdminFin({
     const wS = getWeekBounds(selWeek);
     const wP = getWeekBounds(selWeek - 1);
     const from = getWeekBounds(selWeek - 4).startStr;
-    const [or, pa, co, bo, ds] = await Promise.all([db.from('orders').select('*').eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at'), db.from('payments').select('*').gte('created_at', from + 'T00:00:00'), db.from('users').select('*').eq('role', 'courier').order('name'), db.from('referral_bonuses').select('*').order('created_at', {
+    const [or, pa, co, bo] = await Promise.all([db.from('orders').select('*').eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at'), db.from('payments').select('*').gte('created_at', from + 'T00:00:00'), db.from('users').select('*').eq('role', 'courier').order('name'), db.from('referral_bonuses').select('*').order('created_at', {
       ascending: false
-    }).limit(100), db.from('daily_summaries').select('*').gte('date', from).order('date')]);
+    }).limit(100)]);
     const orders = or.data || [];
     const payments = pa.data || [];
     const couriers = co.data || [];
     const bonuses = bo.data || [];
-    const summaries = ds.data || [];
-    const wSummaries = summaries.filter(x => x.date >= wS.startStr && x.date <= wS.endStr);
 
     // Current selected week orders
     const wOrders = orders.filter(o => {
@@ -11454,10 +11140,9 @@ function AdminFin({
     const exP = payments.filter(p => p.type === 'courier_payout' && p.week_start === wps);
 
     // Totals
-    const totalReceita = wSummaries.reduce((a, r) => a + (+r.client_total || 0), 0);
-    const totalRepasse = wSummaries.reduce((a, r) => a + (+r.courier_total_value || 0), 0);
-    const totalGestora = totalReceita - totalRepasse;
-    const dsEntregas = wSummaries.reduce((a, r) => a + (+r.courier_total || 0), 0);
+    const totalReceita = wOrders.reduce((a, o) => a + (+o.price || 0), 0);
+    const totalRepasse = wOrders.reduce((a, o) => a + (+o.courier_price || 0), 0);
+    const totalGestora = wOrders.reduce((a, o) => a + (+o.gestora_amount || 0), 0);
     const totalCobrado = exC.filter(p => p.status === 'paid').reduce((a, p) => a + (+p.amount || 0), 0);
     const totalPago = exP.filter(p => p.status === 'paid').reduce((a, p) => a + (+p.amount || 0), 0);
     const aPagar = exP.filter(p => p.status === 'pending').reduce((a, p) => a + (+p.amount || 0), 0);
@@ -11469,8 +11154,6 @@ function AdminFin({
     setData({
       wS,
       wOrders,
-      wSummaries,
-      dsEntregas,
       cliMap,
       couMap,
       exC,
@@ -11593,8 +11276,6 @@ function AdminFin({
   const {
     wS,
     wOrders,
-    wSummaries,
-    dsEntregas,
     cliMap,
     couMap,
     exC,
@@ -11649,7 +11330,7 @@ function AdminFin({
       color: 'var(--text2)',
       padding: '0 14px 10px'
     }
-  }, fmtDate(wS.startStr), " a ", fmtDate(wS.endStr), " \xB7 ", dsEntregas, " entregas"), /*#__PURE__*/React.createElement("div", {
+  }, fmtDate(wS.startStr), " a ", fmtDate(wS.endStr), " \xB7 ", wOrders.length, " entregas"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'grid',
       gridTemplateColumns: '1fr 1fr',
@@ -11699,7 +11380,7 @@ function AdminFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, dsEntregas), /*#__PURE__*/React.createElement("div", {
+  }, wOrders.length), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -11719,7 +11400,7 @@ function AdminFin({
   }, "\uD83D\uDD17 Indica\xE7\xF5es"), /*#__PURE__*/React.createElement("button", {
     style: ts('historico'),
     onClick: () => setTab('historico')
-  }, "\uD83D\uDCCB Hist\xF3rico"), /*#__PURE__*/React.createElement("button", {style: ts('relatorio'), onClick: () => setTab('relatorio')}, "Relatório", /*#__PURE__*/React.createElement("button", {style: ts('multinivel'), onClick: () => setTab('multinivel')}, "\uD83D\uDD17 Multín\xEDvel"),/*#__PURE__*/React.createElement("button",{style:ts("entregadores"),onClick:()=>setTab("entregadores")},"Entregadores"),/*#__PURE__*/React.createElement("button",{style:ts("transacoes"),onClick:()=>setTab("transacoes")},"Transações"))), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCCB Hist\xF3rico")), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '12px 14px 0'
     }
@@ -11946,7 +11627,7 @@ function AdminFin({
       className: "btn-sm progress",
       onClick: () => payBonuses(co.id, co.name, mu)
     }, "Pagar b\xF4nus ", fmtMoney(mu))));
-  })), tab === 'relatorio' && /*#__PURE__*/React.createElement(RelatorioFinAdmin, null), tab === 'multinivel' && /*#__PURE__*/React.createElement(MultiNivelReport, null), tab === 'entregadores' && /*#__PURE__*/React.createElement(EntregadoresView, null), tab === 'transacoes' && /*#__PURE__*/React.createElement(TransacoesView, null), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
+  })), tab === 'historico' && /*#__PURE__*/React.createElement("div", {
     style: { padding: '12px 14px 0' }
   }, /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' } },
     /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
@@ -11973,53 +11654,46 @@ function AdminFin({
       })
     )
   ), histLoadingA ? /*#__PURE__*/React.createElement(Loading, null) : histClosings.length === 0 ? /*#__PURE__*/React.createElement("div", { className: "notice ni" }, "Clique em Buscar para carregar.") : (() => {
-    const filteredClosings = histClientFilter ? histClosings.filter(cl => cl.client_id === histClientFilter) : histClosings;
-    const statusL = { matched: '\u2705 Confirmado', agreed: '\u2705 Acordado', pending: '\u23F3 Aguard. cliente', pending_l0: '\uD83D\uDC40 Aguard. aprova\xE7\xE3o', rejected_l0: '\u274C Devolvido', diverged: '\u26A0\uFE0F Diverg\xEAncia' };
-    const statusC2 = { matched: 'var(--green)', agreed: 'var(--green)', pending: 'var(--amber)', pending_l0: 'var(--purple)', rejected_l0: 'var(--red)', diverged: 'var(--red)' };
+    const filteredOrders = histClientFilter ? histClosings.filter(o => o.client_id === histClientFilter) : histClosings;
     const wks = {};
-    filteredClosings.forEach(cl => { const wb=getWeekBoundsFromDate(cl.date); if (!wks[wb.startStr]) wks[wb.startStr]={startStr:wb.startStr,endStr:wb.endStr,closings:[]}; wks[wb.startStr].closings.push(cl); });
+    filteredOrders.forEach(o => { const ds=o.created_at.slice(0,10); const wb=getWeekBoundsFromDate(ds); if (!wks[wb.startStr]) wks[wb.startStr]={startStr:wb.startStr,endStr:wb.endStr,orders:[]}; wks[wb.startStr].orders.push(o); });
     return Object.values(wks).sort((a,b)=>b.startStr.localeCompare(a.startStr)).map(wk => {
-      const total = wk.closings.reduce((a,cl)=>a+(cl.courier_submission||[]).reduce((b,s)=>b+s.qty,0),0);
-      const confQty = wk.closings.filter(cl=>cl.status==='matched'||cl.status==='agreed').reduce((a,cl)=>a+(cl.courier_submission||[]).reduce((b,s)=>b+s.qty,0),0);
-      return /*#__PURE__*/React.createElement("div", { key: wk.startStr, style: { border: '1px solid var(--border)', borderRadius: 'var(--r)', marginBottom: 12, overflow: 'hidden' } },
-        /*#__PURE__*/React.createElement("div", { style: { padding: '10px 12px', background: 'var(--bg2)' } },
-          /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 6 } },
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700 } }, "Semana ", fmtDate(wk.startStr), " \u2014 ", fmtDate(wk.endStr)),
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: 'var(--text2)' } }, wk.closings.length, " fechamento(s) \xB7 ", total, " entregas")
+      const totalR = wk.orders.reduce((a,o)=>a+(+o.price||0),0);
+      const totalC = wk.orders.reduce((a,o)=>a+(+o.courier_price||0),0);
+      const totalG = wk.orders.reduce((a,o)=>a+(+o.gestora_amount||0),0);
+      const couMap = {};
+      wk.orders.forEach(o => { if (!o.courier_id) return; if (!couMap[o.courier_id]) couMap[o.courier_id]={id:o.courier_id,name:o.courier_name,number:o.courier_number,count:0,total:0,repasse:0}; couMap[o.courier_id].count++; couMap[o.courier_id].total+=(+o.price||0); couMap[o.courier_id].repasse+=(+o.courier_price||0); });
+      return /*#__PURE__*/React.createElement("div", { key: wk.startStr, style: { border: "1px solid var(--border)", borderRadius: "var(--r)", marginBottom: 12, overflow: "hidden" } },
+        /*#__PURE__*/React.createElement("div", { style: { padding: "10px 12px", background: "var(--bg2)" } },
+          /*#__PURE__*/React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 700 } }, fmtDate(wk.startStr), " – ", fmtDate(wk.endStr)),
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: "var(--text2)" } }, wk.orders.length, " entregas")
           ),
-          /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 6 } },
-            /*#__PURE__*/React.createElement("div", { style: { flex: 1, background: 'var(--green-l)', borderRadius: 'var(--rs)', padding: '5px 8px', textAlign: 'center' } }, /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: 'var(--green)' } }, confQty), /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: 'var(--text2)' } }, "confirmadas")),
-            /*#__PURE__*/React.createElement("div", { style: { flex: 1, background: 'var(--amber-l)', borderRadius: 'var(--rs)', padding: '5px 8px', textAlign: 'center' } }, /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: 'var(--amber)' } }, total - confQty), /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: 'var(--text2)' } }, "pendentes")),
-            /*#__PURE__*/React.createElement("div", { style: { flex: 1, background: 'var(--bg)', borderRadius: 'var(--rs)', padding: '5px 8px', textAlign: 'center' } }, /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700 } }, wk.closings.filter(cl=>cl.status==='pending'||cl.status==='pending_l0').length), /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: 'var(--text2)' } }, "aguardando"))
-          )
-        ),
-        /*#__PURE__*/React.createElement("div", { style: { overflowX: 'auto' } },
-          /*#__PURE__*/React.createElement("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 } },
-            /*#__PURE__*/React.createElement("thead", null,
-              /*#__PURE__*/React.createElement("tr", { style: { background: 'var(--bg2)', borderBottom: '1px solid var(--border)' } },
-                /*#__PURE__*/React.createElement("th", { style: { padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--text2)', fontSize: 11, whiteSpace: 'nowrap' } }, "Data"),
-                /*#__PURE__*/React.createElement("th", { style: { padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--text2)', fontSize: 11 } }, "Entregador"),
-                /*#__PURE__*/React.createElement("th", { style: { padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--text2)', fontSize: 11 } }, "Cliente"),
-                /*#__PURE__*/React.createElement("th", { style: { padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--text2)', fontSize: 11 } }, "Bairros"),
-                /*#__PURE__*/React.createElement("th", { style: { padding: '6px 6px', textAlign: 'center', fontWeight: 600, color: 'var(--text2)', fontSize: 11 } }, "Qtd"),
-                /*#__PURE__*/React.createElement("th", { style: { padding: '6px 10px', textAlign: 'right', fontWeight: 600, color: 'var(--text2)', fontSize: 11, whiteSpace: 'nowrap' } }, "Status")
-              )
+          /*#__PURE__*/React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 } },
+            /*#__PURE__*/React.createElement("div", { style: { textAlign: "center", background: "var(--blue-l)", borderRadius: "var(--rs)", padding: "6px 4px" } },
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "var(--blue)" } }, fmtMoney(totalR)),
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "var(--blue)" } }, "receita")
             ),
-            /*#__PURE__*/React.createElement("tbody", null,
-              wk.closings.map(cl => {
-                const qty = (cl.courier_submission||[]).reduce((a,s)=>a+s.qty,0);
-                return /*#__PURE__*/React.createElement("tr", { key: cl.id, style: { borderBottom: '1px solid var(--border)' } },
-                  /*#__PURE__*/React.createElement("td", { style: { padding: '7px 10px', whiteSpace: 'nowrap' } }, fmtDate(cl.date)),
-                  /*#__PURE__*/React.createElement("td", { style: { padding: '7px 10px' } }, /*#__PURE__*/React.createElement("div", { style: { fontWeight: 500 } }, cl.courier_name||'-'), cl.courier_number && /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: 'var(--text2)' } }, '#', cl.courier_number)),
-                  /*#__PURE__*/React.createElement("td", { style: { padding: '7px 10px', color: 'var(--text2)' } }, cl.client_name||'-'),
-                  /*#__PURE__*/React.createElement("td", { style: { padding: '7px 10px', fontSize: 11, color: 'var(--text2)' } }, (cl.courier_submission||[]).map((s,i)=>/*#__PURE__*/React.createElement("span",{key:i,style:{marginRight:6,whiteSpace:'nowrap'}},s.label||s.key,": ",s.qty))),
-                  /*#__PURE__*/React.createElement("td", { style: { padding: '7px 6px', textAlign: 'center', fontWeight: 700 } }, qty),
-                  /*#__PURE__*/React.createElement("td", { style: { padding: '7px 10px', textAlign: 'right', fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap', color: statusC2[cl.status]||'var(--text2)' } }, statusL[cl.status]||cl.status)
-                );
-              })
+            /*#__PURE__*/React.createElement("div", { style: { textAlign: "center", background: "var(--green-l)", borderRadius: "var(--rs)", padding: "6px 4px" } },
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "var(--green)" } }, fmtMoney(totalC)),
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "var(--green)" } }, "repasse")
+            ),
+            /*#__PURE__*/React.createElement("div", { style: { textAlign: "center", background: "var(--bg)", borderRadius: "var(--rs)", padding: "6px 4px" } },
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "var(--amber)" } }, fmtMoney(totalG)),
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "var(--text2)" } }, "gestora")
             )
           )
-        )
+        ),
+        Object.values(couMap).sort((a,b)=>b.total-a.total).map(c => /*#__PURE__*/React.createElement("div", { key: c.id, style: { padding: "8px 12px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("span", { style: { fontSize: 12, fontWeight: 600 } }, c.name||"—"),
+            c.number ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--text2)", marginLeft: 6 } }, "#", c.number) : null
+          ),
+          /*#__PURE__*/React.createElement("div", { style: { textAlign: "right" } },
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "var(--blue)" } }, fmtMoney(c.total)),
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "var(--text2)" } }, c.count, " entregas · repasse ", fmtMoney(c.repasse))
+          )
+        ))
       );
     });
   })())));
@@ -12221,102 +11895,170 @@ function cqStatusClass(s) {
   return '';
 }
 
+/* ── CheckinScreen ── */
 function CheckinScreen({ courier, onCheckin }) {
   const [clients, setClients] = React.useState([]);
   const [checkins, setCheckins] = React.useState([]);
   const [loadingCI, setLoadingCI] = React.useState(true);
+
   React.useEffect(() => {
     async function load() {
       const { data: nc } = await db.from('network_clients').select('*, client:client_id(name)').eq('network_id', courier.network_id);
       const { data: ci } = await db.from('courier_checkins').select('courier_id, client_id').is('checked_out_at', null);
-      setClients(nc || []); setCheckins(ci || []); setLoadingCI(false);
+      setClients(nc || []);
+      setCheckins(ci || []);
+      setLoadingCI(false);
     }
     load();
-    const ch = db.channel('cq_checkins_live').on('postgres_changes', { event: '*', schema: 'public', table: 'courier_checkins' }, load).subscribe();
+    const ch = db.channel('cq_checkins_live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'courier_checkins' }, load)
+      .subscribe();
     return () => db.removeChannel(ch);
   }, [courier.network_id]);
+
   async function handleCheckin(nc) {
     const present = checkins.filter(c => c.client_id === nc.client_id).length;
     if (present >= nc.max_slots) return;
-    const { data, error } = await db.from('courier_checkins').insert({ courier_id: courier.id, client_id: nc.client_id, network_id: courier.network_id }).select().single();
+    const { data, error } = await db.from('courier_checkins').insert({
+      courier_id: courier.id,
+      client_id: nc.client_id,
+      network_id: courier.network_id,
+    }).select().single();
     if (!error) onCheckin(data);
   }
-  if (loadingCI) return React.createElement("div", { className: "loading" }, "Carregando clientes...");
-  return React.createElement("div", { className: "checkin-screen" },
-    React.createElement("div", null, React.createElement("h2", null, "Onde você está?"), React.createElement("p", { style: { marginTop: 4 } }, "Toque no cliente para fazer check-in e começar a receber pedidos.")),
-    clients.length === 0 && React.createElement("div", { className: "empty" }, React.createElement("div", { className: "eico" }, "🏪"), "Nenhum cliente disponível para sua rede"),
+
+  if (loadingCI) return /*#__PURE__*/React.createElement("div", { className: "loading" }, "Carregando clientes...");
+
+  return /*#__PURE__*/React.createElement("div", { className: "checkin-screen" },
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("h2", null, "Onde você está?"),
+      /*#__PURE__*/React.createElement("p", { style: { marginTop: 4 } }, "Toque no cliente para fazer check-in e começar a receber pedidos.")
+    ),
+    clients.length === 0 && /*#__PURE__*/React.createElement("div", { className: "empty" },
+      /*#__PURE__*/React.createElement("div", { className: "eico" }, "🏪"),
+      "Nenhum cliente disponível para sua rede"
+    ),
     clients.map(nc => {
       const present = checkins.filter(c => c.client_id === nc.client_id).length;
       const pct = Math.min(100, Math.round((present / nc.max_slots) * 100));
       const isFull = present >= nc.max_slots;
       const fillClass = pct >= 100 ? 'full' : pct >= 70 ? 'warning' : '';
-      return React.createElement("div", { key: nc.id, className: "client-card" + (isFull ? " full" : ""), onClick: () => !isFull && handleCheckin(nc) },
-        React.createElement("div", { className: "client-name" }, "🏪 " + (nc.client ? nc.client.name : nc.client_id)),
-        React.createElement("div", { className: "slots-info" },
-          React.createElement("div", { className: "slots-bar" }, React.createElement("div", { className: "slots-fill " + fillClass, style: { width: pct + "%" } })),
-          React.createElement("span", { className: "slots-text" }, present + "/" + nc.max_slots + " entregadores")),
-        isFull ? React.createElement("div", { style: { fontSize: 13, color: '#E53935', fontWeight: 600 } }, "Vagas esgotadas")
-               : React.createElement("button", { style: { marginTop: 4, background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' } }, "Estou aqui 📍")
+      return /*#__PURE__*/React.createElement("div", {
+        key: nc.id,
+        className: "client-card" + (isFull ? " full" : ""),
+        onClick: () => !isFull && handleCheckin(nc)
+      },
+        /*#__PURE__*/React.createElement("div", { className: "client-name" }, "🏪 " + (nc.client ? nc.client.name : nc.client_id)),
+        /*#__PURE__*/React.createElement("div", { className: "slots-info" },
+          /*#__PURE__*/React.createElement("div", { className: "slots-bar" },
+            /*#__PURE__*/React.createElement("div", { className: "slots-fill " + fillClass, style: { width: pct + "%" } })
+          ),
+          /*#__PURE__*/React.createElement("span", { className: "slots-text" }, present + "/" + nc.max_slots + " entregadores")
+        ),
+        isFull
+          ? /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, color: '#E53935', fontWeight: 600 } }, "Vagas esgotadas")
+          : /*#__PURE__*/React.createElement("button", {
+              className: "btn",
+              style: { marginTop: 4, background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }
+            }, "Estou aqui 📍")
       );
     })
   );
 }
 
+/* ── HubLeaderBanner ── */
 function HubLeaderBanner({ courier, checkins, clients, orders }) {
   const active = checkins.filter(c => !c.checked_out_at);
-  return React.createElement("div", { style: { padding: '12px 16px', background: '#EDE7F6', borderBottom: '2px solid #6A1B9A', display: 'flex', flexDirection: 'column', gap: 10 } },
-    React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-      React.createElement("span", { className: "hub-badge" }, "HUB LEADER"),
-      React.createElement("span", { style: { fontSize: 13, color: '#4A148C', fontWeight: 600 } }, "Visão geral da rede")),
+  return /*#__PURE__*/React.createElement("div", {
+    style: { padding: '12px 16px', background: '#EDE7F6', borderBottom: '2px solid #6A1B9A', display: 'flex', flexDirection: 'column', gap: 10 }
+  },
+    /*#__PURE__*/React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      /*#__PURE__*/React.createElement("span", { className: "hub-badge" }, "HUB LEADER"),
+      /*#__PURE__*/React.createElement("span", { style: { fontSize: 13, color: '#4A148C', fontWeight: 600 } }, "Visão geral da rede")
+    ),
     clients.map(nc => {
       const couriersHere = active.filter(c => c.client_id === nc.client_id).length;
       const ordersHere = orders.filter(o => o.client_id === nc.client_id && o.status === 'available').length;
       const ratio = couriersHere === 0 ? '⚠️' : ordersHere > couriersHere * 2 ? '🔴' : ordersHere > couriersHere ? '🟡' : '🟢';
-      return React.createElement("div", { key: nc.id, style: { background: 'white', border: '1px solid #CE93D8', borderRadius: 10, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 } },
-        React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          React.createElement("span", { style: { fontWeight: 700, fontSize: 14 } }, nc.client ? nc.client.name : '?'),
-          React.createElement("span", { style: { fontSize: 18 } }, ratio)),
-        React.createElement("div", { style: { display: 'flex', gap: 16, fontSize: 13, flexWrap: 'wrap' } },
-          React.createElement("span", null, "🍳 ", React.createElement("strong", null, ordersHere), " em preparo"),
-          React.createElement("span", null, "🛵 ", React.createElement("strong", null, couriersHere), "/" + nc.max_slots + " entregadores"),
-          couriersHere > 0 && React.createElement("span", { style: { fontWeight: 700, color: ordersHere/couriersHere > 2 ? '#C62828' : ordersHere/couriersHere > 1 ? '#E65100' : '#2E7D32' } }, "coef. " + (ordersHere/couriersHere).toFixed(1) + " ped/ent"),
-          couriersHere === 0 && ordersHere > 0 && React.createElement("span", { style: { fontWeight: 700, color: '#C62828' } }, "⚠️ sem entregadores"))
+      return /*#__PURE__*/React.createElement("div", {
+        key: nc.id,
+        style: { background: 'white', border: '1px solid #CE93D8', borderRadius: 10, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 }
+      },
+        /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+          /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, fontSize: 14 } }, nc.client ? nc.client.name : '?'),
+          /*#__PURE__*/React.createElement("span", { style: { fontSize: 18 } }, ratio)
+        ),
+        /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 16, fontSize: 13, flexWrap: 'wrap' } },
+          /*#__PURE__*/React.createElement("span", null, "🍳 ", /*#__PURE__*/React.createElement("strong", null, ordersHere), " em preparo"),
+          /*#__PURE__*/React.createElement("span", null, "🛵 ", /*#__PURE__*/React.createElement("strong", null, couriersHere), "/" + nc.max_slots + " entregadores"),
+          couriersHere > 0 && /*#__PURE__*/React.createElement("span", {
+            style: { fontWeight: 700, color: ordersHere/couriersHere > 2 ? '#C62828' : ordersHere/couriersHere > 1 ? '#E65100' : '#2E7D32' }
+          }, "coef. " + (ordersHere/couriersHere).toFixed(1) + " ped/ent"),
+          couriersHere === 0 && ordersHere > 0 && /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: '#C62828' } }, "⚠️ sem entregadores")
+        ),
+        ordersHere/couriersHere > 2 && couriersHere > 0 && /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 11, color: '#C62828', fontWeight: 600 }
+        }, "🔴 Demanda alta — considere realocar entregadores"),
+        ordersHere === 0 && couriersHere > 2 && /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 11, color: '#E65100', fontWeight: 600 }
+        }, "🟡 Entregadores ociosos — considere realocá-los")
       );
     })
   );
 }
 
+/* ── CQOrderCard (separado do OrderCard existente) ── */
 function CQOrderCard({ order, courierId, onAccept, onDeliver }) {
   const items = (order.platform_payload && order.platform_payload.items) ? order.platform_payload.items : [];
   const isMyOrder = courierId && order.entregador_id === courierId;
-  return React.createElement("div", { className: "cq-order-card" + (isMyOrder ? " mine" : "") },
-    React.createElement("div", { className: "cq-order-header" },
-      React.createElement("span", { className: "cq-platform-badge" }, (order.platform || 'pedido').toUpperCase()),
-      React.createElement("span", { className: "cq-order-id" }, "#" + order.platform_order_id),
-      React.createElement("span", { className: "cq-status-badge " + cqStatusClass(order.status) }, cqStatusLabel(order.status))),
-    React.createElement("div", null, React.createElement("div", { className: "cq-neighborhood" }, "📍 " + order.neighborhood_label), React.createElement("div", { className: "cq-street" }, order.street)),
-    React.createElement("div", { className: "cq-order-meta" },
-      React.createElement("span", { className: "cq-price-tag" }, "R$ " + Number(order.courier_price).toFixed(2)),
-      React.createElement("span", { className: "cq-items-preview" }, items.map(i => i.qty + "x " + i.name).join(' · '))),
-    courierId && order.status === 'available' && !isMyOrder && React.createElement("button", {
+  return /*#__PURE__*/React.createElement("div", { className: "cq-order-card" + (isMyOrder ? " mine" : "") },
+    /*#__PURE__*/React.createElement("div", { className: "cq-order-header" },
+      /*#__PURE__*/React.createElement("span", { className: "cq-platform-badge" }, (order.platform || 'pedido').toUpperCase()),
+      /*#__PURE__*/React.createElement("span", { className: "cq-order-id" }, "#" + order.platform_order_id),
+      /*#__PURE__*/React.createElement("span", { className: "cq-status-badge " + cqStatusClass(order.status) }, cqStatusLabel(order.status))
+    ),
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { className: "cq-neighborhood" }, "📍 " + order.neighborhood_label),
+      /*#__PURE__*/React.createElement("div", { className: "cq-street" }, order.street)
+    ),
+    /*#__PURE__*/React.createElement("div", { className: "cq-order-meta" },
+      /*#__PURE__*/React.createElement("span", { className: "cq-price-tag" }, "R$ " + Number(order.courier_price).toFixed(2)),
+      /*#__PURE__*/React.createElement("span", { className: "cq-items-preview" }, items.map(i => i.qty + "x " + i.name).join(' · '))
+    ),
+    courierId && order.status === 'available' && !isMyOrder && /*#__PURE__*/React.createElement("button", {
       style: { background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer', width: '100%' },
       onClick: () => onAccept(order)
     }, "Aceitar entrega")
   );
 }
 
+/* ── CQCodeModal ── */
 function CQCodeModal({ order, onConfirm, onClose }) {
   const [code, setCode] = React.useState('');
   const [loadingCode, setLoadingCode] = React.useState(false);
-  return React.createElement("div", { className: "cq-modal-overlay" },
-    React.createElement("div", { className: "cq-modal-sheet" },
-      React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-        React.createElement("h2", { style: { fontSize: 18, fontWeight: 700 } }, "Código de entrega"),
-        React.createElement("button", { onClick: onClose, style: { border: 'none', background: 'none', fontSize: 20, cursor: 'pointer', color: '#999' } }, "✕")),
-      React.createElement("p", { style: { fontSize: 13, color: '#666' } }, "Peça o código ao cliente e digite abaixo:"),
-      React.createElement("input", { className: "code-input", type: "text", maxLength: 6, placeholder: "_ _ _ _", value: code, onChange: e => setCode(e.target.value.toUpperCase()), autoFocus: true }),
-      React.createElement("div", { style: { padding: '12px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, background: '#FFF3E0', color: '#E65100', border: '1px solid #FFB74D' } }, "📦 " + order.neighborhood_label + " — " + order.street),
-      React.createElement("button", {
+  return /*#__PURE__*/React.createElement("div", { className: "cq-modal-overlay" },
+    /*#__PURE__*/React.createElement("div", { className: "cq-modal-sheet" },
+      /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        /*#__PURE__*/React.createElement("h2", { style: { fontSize: 18, fontWeight: 700 } }, "Código de entrega"),
+        /*#__PURE__*/React.createElement("button", {
+          onClick: onClose,
+          style: { border: 'none', background: 'none', fontSize: 20, cursor: 'pointer', color: '#999' }
+        }, "✕")
+      ),
+      /*#__PURE__*/React.createElement("p", { style: { fontSize: 13, color: '#666' } }, "Peça o código ao cliente e digite abaixo:"),
+      /*#__PURE__*/React.createElement("input", {
+        className: "code-input",
+        type: "text",
+        maxLength: 6,
+        placeholder: "_ _ _ _",
+        value: code,
+        onChange: e => setCode(e.target.value.toUpperCase()),
+        autoFocus: true
+      }),
+      /*#__PURE__*/React.createElement("div", {
+        style: { padding: '12px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, background: '#FFF3E0', color: '#E65100', border: '1px solid #FFB74D' }
+      }, "📦 " + order.neighborhood_label + " — " + order.street),
+      /*#__PURE__*/React.createElement("button", {
         style: { background: code.trim() && !loadingCode ? '#43A047' : '#ccc', color: 'white', padding: '14px 20px', borderRadius: 10, fontSize: 15, fontWeight: 600, border: 'none', cursor: code.trim() && !loadingCode ? 'pointer' : 'not-allowed', width: '100%' },
         disabled: !code.trim() || loadingCode,
         onClick: async () => { setLoadingCode(true); await onConfirm(order, code); setLoadingCode(false); }
@@ -12325,9 +12067,11 @@ function CQCodeModal({ order, onConfirm, onClose }) {
   );
 }
 
+/* ── CourierQueue (componente principal) ── */
 function CourierQueue({ setPage }) {
   const { profile } = useAuth();
-  const courier = profile;
+  const courier = profile; // profile.id, profile.is_hub_leader, profile.network_id
+
   const [checkin, setCQCheckin] = React.useState(null);
   const [orders, setCQOrders] = React.useState([]);
   const [checkins, setCQCheckins] = React.useState([]);
@@ -12341,37 +12085,55 @@ function CourierQueue({ setPage }) {
 
   React.useEffect(() => {
     if (!courier || !courier.network_id) return;
-    db.from('network_clients').select('*, client:client_id(name)').eq('network_id', courier.network_id).then(({ data }) => setCQNetworkClients(data || []));
+    db.from('network_clients').select('*, client:client_id(name)').eq('network_id', courier.network_id)
+      .then(({ data }) => setCQNetworkClients(data || []));
   }, [courier && courier.network_id]);
 
   React.useEffect(() => {
     if (!courier) return;
     setLoadingCQ(true);
+
     async function loadOrders() {
       let query = db.from('platform_orders').select('*').order('created_at', { ascending: false });
       if (courier.is_hub_leader) {
         const clientIds = networkClients.map(nc => nc.client_id);
-        if (clientIds.length > 0) query = query.in('client_id', clientIds); else { setCQOrders([]); setLoadingCQ(false); return; }
+        if (clientIds.length > 0) query = query.in('client_id', clientIds);
+        else { setCQOrders([]); setLoadingCQ(false); return; }
       } else if (checkin) {
-        const { data } = await db.from('platform_orders').select('*').or('client_id.eq.' + checkin.client_id + ',and(entregador_id.eq.' + courier.id + ',status.eq.delivering)').order('created_at', { ascending: false });
-        setCQOrders(data || []); setLoadingCQ(false); return;
+        const { data } = await db.from('platform_orders').select('*')
+          .or('client_id.eq.' + checkin.client_id + ',and(entregador_id.eq.' + courier.id + ',status.eq.delivering)')
+          .order('created_at', { ascending: false });
+        setCQOrders(data || []);
+        setLoadingCQ(false);
+        return;
       } else {
         query = query.eq('entregador_id', courier.id).eq('status', 'delivering');
       }
       const { data } = await query;
-      setCQOrders(data || []); setLoadingCQ(false);
+      setCQOrders(data || []);
+      setLoadingCQ(false);
     }
+
     async function loadCheckins() {
       const { data } = await db.from('courier_checkins').select('*').is('checked_out_at', null);
       setCQCheckins(data || []);
     }
-    loadOrders(); loadCheckins();
+
+    loadOrders();
+    loadCheckins();
+
     if (channelRef.current) db.removeChannel(channelRef.current);
-    const ch = db.channel('cq_orders_' + courier.id)
+    const ch = db.channel('cq_orders_checkins_' + courier.id)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'platform_orders' }, payload => {
         const updated = payload.new;
-        if (updated && updated.entregador_id === courier.id && updated.status === 'cancelled_by_platform') { setCQCancelAlert('⚠️ Pedido ' + updated.platform_order_id + ' cancelado!'); setTimeout(() => setCQCancelAlert(null), 7000); }
-        if (payload.eventType === 'INSERT' && updated && updated.status === 'available') { setCQNotification('🆕 Novo pedido em ' + updated.neighborhood_label + '!'); setTimeout(() => setCQNotification(null), 4000); }
+        if (updated && updated.entregador_id === courier.id && updated.status === 'cancelled_by_platform') {
+          setCQCancelAlert('⚠️ Pedido ' + updated.platform_order_id + ' cancelado! Não prossiga com a entrega.');
+          setTimeout(() => setCQCancelAlert(null), 7000);
+        }
+        if (payload.eventType === 'INSERT' && updated && updated.status === 'available') {
+          setCQNotification('🆕 Novo pedido em ' + updated.neighborhood_label + '!');
+          setTimeout(() => setCQNotification(null), 4000);
+        }
         loadOrders();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'courier_checkins' }, loadCheckins)
@@ -12381,79 +12143,200 @@ function CourierQueue({ setPage }) {
   }, [checkin, courier && courier.id, courier && courier.is_hub_leader, networkClients.length]);
 
   async function handleAccept(order) {
-    await db.from('platform_orders').update({ status: 'accepted', entregador_id: courier.id, accepted_at: new Date().toISOString() }).eq('id', order.id);
-    setCQNotification('🛵 Pedido aceito! Vá até ' + order.neighborhood_label); setTimeout(() => setCQNotification(null), 6000);
-  }
-  async function handleConfirmCode(order, code) {
-    await db.from('platform_orders').update({ status: 'delivered', delivery_code: code, delivered_at: new Date().toISOString() }).eq('id', order.id);
-    setCQCodeModal(null); setCQNotification('✅ Entrega confirmada!'); setTimeout(() => setCQNotification(null), 4000);
-  }
-  async function handleCheckout(ordersToDeliver) {
-    if (!checkin) return;
-    if (ordersToDeliver && ordersToDeliver.length > 0) await db.from('platform_orders').update({ status: 'delivering' }).in('id', ordersToDeliver.map(o => o.id));
-    await db.from('courier_checkins').update({ checked_out_at: new Date().toISOString() }).eq('id', checkin.id);
-    setCQCheckin(null); setCQOrders([]); setCQNotification('🚀 Saindo! Boa entrega!'); setTimeout(() => setCQNotification(null), 5000);
-  }
-  async function addMockOrder() {
-    const clientId = checkin ? checkin.client_id : networkClients.length > 0 ? networkClients[0].client_id : null;
-    if (!clientId) { setCQNotification('Faça check-in primeiro'); setTimeout(() => setCQNotification(null), 3000); return; }
-    const hoods = [{key:'ICARAI',label:'Icaraí',street:'Rua Lemos Cunha, 200',courier_price:8,client_price:10},{key:'CHARITAS',label:'Charitas',street:'Estrada Fróes, 410',courier_price:10,client_price:12},{key:'CENTRO',label:'Centro',street:'Rua XV de Novembro, 55',courier_price:8,client_price:11}];
-    const n = hoods[Math.floor(Math.random() * hoods.length)];
-    await db.from('platform_orders').insert({ platform: 'mock', platform_order_id: 'MOCK-' + Math.floor(Math.random()*9000+1000), client_id: clientId, status: 'available', neighborhood_key: n.key, neighborhood_label: n.label, street: n.street, courier_price: n.courier_price, client_price: n.client_price, platform_payload: { items: [{ name: 'Burrito Cali', qty: Math.floor(Math.random()*3)+1 }] } });
+    await db.from('platform_orders').update({
+      status: 'accepted', entregador_id: courier.id, accepted_at: new Date().toISOString(),
+    }).eq('id', order.id);
+    setCQNotification('🛵 Pedido aceito! Vá até ' + order.neighborhood_label + ' — ' + order.street);
+    setTimeout(() => setCQNotification(null), 6000);
   }
 
-  if (!courier) return React.createElement("div", { className: "loading" }, "Carregando...");
+  async function handleConfirmCode(order, code) {
+    await db.from('platform_orders').update({
+      status: 'delivered', delivery_code: code, delivered_at: new Date().toISOString(),
+    }).eq('id', order.id);
+    setCQCodeModal(null);
+    setCQNotification('✅ Entrega confirmada!');
+    setTimeout(() => setCQNotification(null), 4000);
+  }
+
+  async function handleCheckout(ordersToDeliver) {
+    if (!checkin) return;
+    if (ordersToDeliver && ordersToDeliver.length > 0) {
+      await db.from('platform_orders').update({ status: 'delivering' }).in('id', ordersToDeliver.map(o => o.id));
+    }
+    await db.from('courier_checkins').update({ checked_out_at: new Date().toISOString() }).eq('id', checkin.id);
+    setCQCheckin(null);
+    setCQOrders([]);
+    setCQNotification('🚀 Saindo com ' + ((ordersToDeliver && ordersToDeliver.length) || 0) + ' pedido(s). Boa entrega!');
+    setTimeout(() => setCQNotification(null), 5000);
+  }
+
+  async function addMockOrder() {
+    const clientId = checkin ? checkin.client_id : networkClients.length > 0 ? networkClients[0].client_id : null;
+    if (!clientId) { setCQNotification('Faça check-in primeiro para simular pedido'); setTimeout(() => setCQNotification(null), 3000); return; }
+    const hoods = [
+      { key:'ICARAI', label:'Icaraí', street:'Rua Lemos Cunha, 200', courier_price:8, client_price:10 },
+      { key:'CHARITAS', label:'Charitas', street:'Estrada Fróes, 410', courier_price:10, client_price:12 },
+      { key:'CENTRO', label:'Centro', street:'Rua XV de Novembro, 55', courier_price:8, client_price:11 },
+    ];
+    const n = hoods[Math.floor(Math.random() * hoods.length)];
+    await db.from('platform_orders').insert({
+      platform: 'mock', platform_order_id: 'MOCK-' + Math.floor(Math.random()*9000+1000),
+      client_id: clientId, status: 'available',
+      neighborhood_key: n.key, neighborhood_label: n.label, street: n.street,
+      courier_price: n.courier_price, client_price: n.client_price,
+      platform_payload: { items: [{ name: 'Burrito Cali', qty: Math.floor(Math.random()*3)+1 }] }
+    });
+  }
+
+  if (!courier) return /*#__PURE__*/React.createElement("div", { className: "loading" }, "Carregando...");
+
   const available = orders.filter(o => o.status === 'available');
   const myActive = orders.filter(o => o.entregador_id === courier.id && (o.status === 'accepted' || o.status === 'delivering'));
   const history = orders.filter(o => ['delivered','cancelled','cancelled_by_platform','cancelled_after_delivery'].includes(o.status));
   const isReady = courier.is_hub_leader || checkin;
   const myDelivering = orders.filter(o => o.entregador_id === courier.id && o.status === 'delivering');
 
-  return React.createElement("div", { className: "screen" },
-    cancelAlert && React.createElement("div", { className: "cancel-alert-cq" }, cancelAlert),
-    React.createElement("div", { className: "topbar" },
-      React.createElement("button", { className: "back-btn", onClick: () => setPage('courier') }, "←"),
-      React.createElement("div", { style: { flex: 1 } },
-        React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "📦 Fila de Pedidos"),
-        React.createElement("div", { style: { fontSize: 11, opacity: 0.8 } }, isReady ? (checkin ? "Check-in: " + cqTimeSince(checkin.checked_in_at) : "Hub Leader") : "Faça check-in para começar")),
-      courier.is_hub_leader && React.createElement("span", { className: "hub-badge" }, "HUB LEADER")),
-    courier.is_hub_leader && networkClients.length > 0 && React.createElement(HubLeaderBanner, { courier, checkins, clients: networkClients, orders }),
-    checkin && !courier.is_hub_leader && React.createElement("div", { className: "checkin-banner" },
-      React.createElement("div", null,
-        React.createElement("div", { className: "checkin-info" }, "📍 " + ((networkClients.find(nc => nc.client_id === checkin.client_id) || {}).client || {}).name || 'Cliente'),
-        React.createElement("div", { className: "checkin-time" }, "Check-in há " + cqTimeSince(checkin.checked_in_at)))),
-    notification && React.createElement("div", { style: { padding: '8px 16px' } }, React.createElement("div", { style: { padding: '12px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, background: '#E8F5E9', color: '#2E7D32', border: '1px solid #A5D6A7' } }, notification)),
-    !isReady && myDelivering.length > 0 && React.createElement("div", { style: { padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 } },
-      React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: '#E65100', textTransform: 'uppercase' } }, "🚀 Entregas em andamento"),
-      myDelivering.map(o => React.createElement("div", { key: o.id, className: "active-order" },
-        React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } }, o.neighborhood_label),
-        React.createElement("div", { style: { fontSize: 12, color: '#555' } }, o.street),
-        React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: '#2E7D32' } }, "R$ " + Number(o.courier_price).toFixed(2)),
-        React.createElement("button", { style: { background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }, onClick: () => setCQCodeModal(o) }, "🔑 Confirmar entrega com código")))),
+  return /*#__PURE__*/React.createElement("div", { className: "screen" },
+    cancelAlert && /*#__PURE__*/React.createElement("div", { className: "cancel-alert-cq" }, cancelAlert),
+
+    /* Header */
+    /*#__PURE__*/React.createElement("div", { className: "topbar" },
+      /*#__PURE__*/React.createElement("button", {
+        className: "back-btn",
+        onClick: () => setPage('courier')
+      }, "←"),
+      /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
+        /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "📦 Fila de Pedidos"),
+        /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, opacity: 0.8 } },
+          isReady ? (checkin ? "Check-in: " + cqTimeSince(checkin.checked_in_at) : "Hub Leader") : "Faça check-in para começar"
+        )
+      ),
+      courier.is_hub_leader && /*#__PURE__*/React.createElement("span", { className: "hub-badge" }, "HUB LEADER")
+    ),
+
+    /* Hub leader banner */
+    courier.is_hub_leader && networkClients.length > 0 && /*#__PURE__*/React.createElement(HubLeaderBanner, {
+      courier: courier, checkins: checkins, clients: networkClients, orders: orders
+    }),
+
+    /* Check-in ativo banner */
+    checkin && !courier.is_hub_leader && /*#__PURE__*/React.createElement("div", { className: "checkin-banner" },
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("div", { className: "checkin-info" },
+          "📍 " + ((networkClients.find(nc => nc.client_id === checkin.client_id) || {}).client || {}).name || 'Cliente'
+        ),
+        /*#__PURE__*/React.createElement("div", { className: "checkin-time" }, "Check-in há " + cqTimeSince(checkin.checked_in_at))
+      )
+    ),
+
+    /* Notification */
+    notification && /*#__PURE__*/React.createElement("div", { style: { padding: '8px 16px' } },
+      /*#__PURE__*/React.createElement("div", {
+        style: { padding: '12px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, background: '#E8F5E9', color: '#2E7D32', border: '1px solid #A5D6A7' }
+      }, notification)
+    ),
+
+    /* Entregas em andamento sem check-in */
+    !isReady && myDelivering.length > 0 && /*#__PURE__*/React.createElement("div", { style: { padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 } },
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: '#E65100', textTransform: 'uppercase', letterSpacing: 0.5 } }, "🚀 Entregas em andamento"),
+      myDelivering.map(o =>
+        /*#__PURE__*/React.createElement("div", { key: o.id, className: "active-order" },
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } }, o.neighborhood_label),
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: '#555' } }, o.street),
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: '#2E7D32' } }, "R$ " + Number(o.courier_price).toFixed(2)),
+          /*#__PURE__*/React.createElement("button", {
+            style: { background: '#43A047', color: 'white', padding: '10px 16px', borderRadius: 10, fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' },
+            onClick: () => setCQCodeModal(o)
+          }, "🔑 Confirmar entrega com código")
+        )
+      ),
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: '#999', textAlign: 'center' } },
+        "Confirme as entregas e faça novo check-in para ver pedidos em preparo"
+      )
+    ),
+
+    /* CHECK-IN SCREEN ou conteúdo */
     !isReady
-      ? React.createElement(CheckinScreen, { courier, onCheckin: setCQCheckin })
-      : React.createElement(React.Fragment, null,
-          React.createElement("div", { className: "content" },
-            loadingCQ && React.createElement("div", { className: "loading" }, "Carregando pedidos..."),
-            tab === 'queue' && !loadingCQ && React.createElement(React.Fragment, null,
-              myActive.length > 0 && React.createElement("div", { className: "active-order" },
-                React.createElement("div", { className: "active-order-label" }, "🛵 " + (myActive[0].status === 'delivering' ? 'Em entrega' : 'Pedido(s) aceito(s)') + " — " + myActive.length + " pedido(s)"),
-                myActive.map(o => React.createElement("div", { key: o.id, style: { borderTop: '1px solid #C8E6C9', paddingTop: 10, marginTop: 2 } },
-                  React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' } },
-                    React.createElement("div", null, React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } }, o.neighborhood_label), React.createElement("div", { style: { fontSize: 12, color: '#555' } }, o.street)),
-                    React.createElement("span", { style: { fontWeight: 800, color: '#2E7D32', fontSize: 15 } }, "R$ " + Number(o.courier_price).toFixed(2))),
-                  o.status === 'delivering' && React.createElement("button", { style: { marginTop: 8, background: '#185FA5', color: 'white', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }, onClick: () => setCQCodeModal(o) }, "🔑 Confirmar entrega"))),
-                myActive.some(o => o.status === 'accepted') && checkin && React.createElement("button", { style: { marginTop: 4, background: '#185FA5', color: 'white', padding: '14px 20px', borderRadius: 10, fontSize: 15, fontWeight: 600, border: 'none', cursor: 'pointer', width: '100%' }, onClick: () => handleCheckout(myActive.filter(o => o.status === 'accepted')) }, "🚀 Saí — iniciar entrega")),
-              React.createElement("div", { style: { display: 'flex', justifyContent: 'flex-end' } }, React.createElement("button", { style: { background: '#f5f5f5', color: '#333', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }, onClick: addMockOrder }, "+ Simular pedido")),
-              available.length === 0 && myActive.length === 0 && React.createElement("div", { className: "empty" }, React.createElement("div", { className: "eico" }, "🛵"), "Nenhum pedido em preparo"),
-              available.map(o => React.createElement(CQOrderCard, { key: o.id, order: o, courierId: courier.id, onAccept: handleAccept, onDeliver: () => setCQCodeModal(o) }))),
-            tab === 'history' && !loadingCQ && React.createElement(React.Fragment, null,
-              React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: '#999', textTransform: 'uppercase', letterSpacing: 0.5 } }, "Histórico (" + history.length + ")"),
-              history.length === 0 && React.createElement("div", { className: "empty" }, React.createElement("div", { className: "eico" }, "📋"), "Nenhuma entrega ainda"),
-              history.map(o => React.createElement(CQOrderCard, { key: o.id, order: o, courierId: courier.id, onAccept: handleAccept })))),
-          React.createElement("div", { style: { display: 'flex', borderTop: '1px solid #eee', background: 'white' } },
-            ['queue','history'].map(t => React.createElement("button", { key: t, style: { flex: 1, padding: '12px 4px 10px', textAlign: 'center', fontSize: 11, color: tab === t ? '#E53935' : '#999', cursor: 'pointer', border: 'none', background: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }, onClick: () => setCQTab(t) }, React.createElement("span", { style: { fontSize: 20 } }, t === 'queue' ? '🏠' : '📋'), t === 'queue' ? 'Fila' : 'Histórico')))),
-    codeModal && React.createElement(CQCodeModal, { order: codeModal, onConfirm: handleConfirmCode, onClose: () => setCQCodeModal(null) })
+      ? /*#__PURE__*/React.createElement(CheckinScreen, { courier: courier, onCheckin: setCQCheckin })
+      : /*#__PURE__*/React.createElement(React.Fragment, null,
+          /*#__PURE__*/React.createElement("div", { className: "content" },
+            loadingCQ && /*#__PURE__*/React.createElement("div", { className: "loading" }, "Carregando pedidos..."),
+
+            tab === 'queue' && !loadingCQ && /*#__PURE__*/React.createElement(React.Fragment, null,
+              myActive.length > 0 && /*#__PURE__*/React.createElement("div", { className: "active-order" },
+                /*#__PURE__*/React.createElement("div", { className: "active-order-label" },
+                  "🛵 " + (myActive[0].status === 'delivering' ? 'Em entrega' : 'Pedido(s) aceito(s)') + " — " + myActive.length + " pedido(s)"
+                ),
+                myActive.map(o =>
+                  /*#__PURE__*/React.createElement("div", { key: o.id, style: { borderTop: '1px solid #C8E6C9', paddingTop: 10, marginTop: 2 } },
+                    /*#__PURE__*/React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' } },
+                      /*#__PURE__*/React.createElement("div", null,
+                        /*#__PURE__*/React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } }, o.neighborhood_label),
+                        /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: '#555' } }, o.street)
+                      ),
+                      /*#__PURE__*/React.createElement("span", { style: { fontWeight: 800, color: '#2E7D32', fontSize: 15 } }, "R$ " + Number(o.courier_price).toFixed(2))
+                    ),
+                    o.status === 'delivering' && /*#__PURE__*/React.createElement("button", {
+                      style: { marginTop: 8, background: '#185FA5', color: 'white', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' },
+                      onClick: () => setCQCodeModal(o)
+                    }, "🔑 Confirmar entrega")
+                  )
+                ),
+                myActive.some(o => o.status === 'accepted') && checkin && /*#__PURE__*/React.createElement("button", {
+                  style: { marginTop: 4, background: '#185FA5', color: 'white', padding: '14px 20px', borderRadius: 10, fontSize: 15, fontWeight: 600, border: 'none', cursor: 'pointer', width: '100%' },
+                  onClick: () => handleCheckout(myActive.filter(o => o.status === 'accepted'))
+                }, "🚀 Saí — iniciar entrega")
+              ),
+
+
+              available.length === 0 && myActive.length === 0 && /*#__PURE__*/React.createElement("div", { className: "empty" },
+                /*#__PURE__*/React.createElement("div", { className: "eico" }, "🛵"),
+                "Nenhum pedido em preparo"
+              ),
+              available.map(o =>
+                /*#__PURE__*/React.createElement(CQOrderCard, { key: o.id, order: o, courierId: courier.id, onAccept: handleAccept, onDeliver: () => setCQCodeModal(o) })
+              )
+            ),
+
+            tab === 'history' && !loadingCQ && /*#__PURE__*/React.createElement(React.Fragment, null,
+              /*#__PURE__*/React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: '#999', textTransform: 'uppercase', letterSpacing: 0.5 } },
+                "Histórico (" + history.length + ")"
+              ),
+              history.length === 0 && /*#__PURE__*/React.createElement("div", { className: "empty" },
+                /*#__PURE__*/React.createElement("div", { className: "eico" }, "📋"),
+                "Nenhuma entrega ainda"
+              ),
+              history.map(o =>
+                /*#__PURE__*/React.createElement(CQOrderCard, { key: o.id, order: o, courierId: courier.id, onAccept: handleAccept })
+              )
+            )
+          ),
+
+          /* Nav */
+          /*#__PURE__*/React.createElement("div", { style: { display: 'flex', borderTop: '1px solid #eee', background: 'white' } },
+            ['queue', 'history'].map(t =>
+              /*#__PURE__*/React.createElement("button", {
+                key: t,
+                style: {
+                  flex: 1, padding: '12px 4px 10px', textAlign: 'center', fontSize: 11,
+                  color: tab === t ? '#E53935' : '#999', cursor: 'pointer', border: 'none',
+                  background: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3
+                },
+                onClick: () => setCQTab(t)
+              },
+                /*#__PURE__*/React.createElement("span", { style: { fontSize: 20 } }, t === 'queue' ? '🏠' : '📋'),
+                t === 'queue' ? 'Fila' : 'Histórico'
+              )
+            )
+          )
+        ),
+
+    codeModal && /*#__PURE__*/React.createElement(CQCodeModal, {
+      order: codeModal,
+      onConfirm: handleConfirmCode,
+      onClose: () => setCQCodeModal(null)
+    })
   );
 }
 
