@@ -5765,6 +5765,21 @@ function AdminSettings({
       _changed: false
     })));
   };
+  const saveNetworkPrices = async () => {
+    if (!user?.network_id) return;
+    const { data: nt } = await db.from('price_tables').select('id').eq('network_id', user.network_id).eq('is_default', true).single();
+    if (!nt) return;
+    await db.from('price_items').delete().eq('price_table_id', nt.id);
+    await db.from('price_items').insert(bairros.map((b, i) => ({
+      neighborhood_key: b.key,
+      neighborhood_label: b.label,
+      client_price: +b.cliente || 0,
+      courier_price: +b.entregador || 0,
+      sort_order: i
+    })));
+    toast('Preços salvos!');
+  };
+
   const saveClientPrices = async () => {
     if (!selClient) {
       toast('Selecione um cliente');
@@ -5962,6 +5977,7 @@ function AdminSettings({
         };
         setBairros(nb);
       },
+      onBlur: saveNetworkPrices,
       style: {
         width: '100%',
         padding: '5px 7px',
@@ -5985,6 +6001,7 @@ function AdminSettings({
         };
         setBairros(nb);
       },
+      onBlur: saveNetworkPrices,
       style: {
         width: 72,
         textAlign: 'center',
@@ -6007,6 +6024,7 @@ function AdminSettings({
         };
         setBairros(nb);
       },
+      onBlur: saveNetworkPrices,
       style: {
         width: 72,
         textAlign: 'center',
