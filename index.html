@@ -5787,6 +5787,7 @@ function AdminSettings({
     if (!defaultPriceTableId) return;
     await db.from('price_items').delete().eq('price_table_id', defaultPriceTableId);
     await db.from('price_items').insert(bairros.map((b, i) => ({
+      price_table_id: defaultPriceTableId,
       neighborhood_key: b.key,
       neighborhood_label: b.label,
       client_price: +b.cliente || 0,
