@@ -3046,86 +3046,12 @@ function ClientClosing({
     style: ts('history'),
     onClick: () => setTab('history')
   }, "Hist\xF3rico")), loading ? /*#__PURE__*/React.createElement(Loading, null) : /*#__PURE__*/React.createElement(React.Fragment, null, tab === 'pending' && /*#__PURE__*/React.createElement(React.Fragment, null, pending.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
-    icon: "\u2705",
+    icon: "✅",
     text: "Nenhum lan\xE7amento pendente. Os entregadores ainda n\xE3o enviaram o fechamento de hoje."
-  }) : pending.map(cl => {
-    const total = (cl.courier_submission || []).reduce((a, x) => a + x.qty, 0);
-    return /*#__PURE__*/React.createElement("div", {
-      key: cl.id,
-      className: "ocard",
-      style: {
-        margin: '8px 14px'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        marginBottom: 10
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700
-      }
-    }, cl.courier_name, cl.courier_number ? ' #' + cl.courier_number : ''), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, fmtDate(cl.date), " \xB7 ", total, " entrega", total !== 1 ? 's' : '')), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        padding: '3px 9px',
-        borderRadius: 20,
-        fontWeight: 600,
-        background: 'var(--amber-l)',
-        color: 'var(--amber)'
-      }
-    }, "\u23F3 Aguarda voc\xEA")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        background: 'var(--bg2)',
-        borderRadius: 'var(--rs)',
-        padding: '10px 12px',
-        marginBottom: 12
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        fontWeight: 700,
-        color: 'var(--text2)',
-        textTransform: 'uppercase',
-        letterSpacing: '.06em',
-        marginBottom: 6
-      }
-    }, "Lan\xE7ado pelo entregador"), (cl.courier_submission || []).map((s, i) => /*#__PURE__*/React.createElement("div", {
-      key: i,
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        fontSize: 13,
-        padding: '3px 0',
-        borderBottom: i < (cl.courier_submission || []).length - 1 ? '1px solid var(--border)' : ''
-      }
-    }, /*#__PURE__*/React.createElement("span", null, s.label), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontWeight: 700
-      }
-    }, s.qty, "x"))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        fontSize: 14,
-        fontWeight: 700,
-        marginTop: 8,
-        paddingTop: 6,
-        borderTop: '1px solid var(--border)'
-      }
-    }, /*#__PURE__*/React.createElement("span", null, "Total"), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: 'var(--green)'
-      }
-    }, total, " entregas"))), (contesting === null || contesting === void 0 ? void 0 : contesting.id) === cl.id ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }) : /*#__PURE__*/React.createElement(React.Fragment, null, contesting ? /*#__PURE__*/React.createElement("div", {
+    className: "ocard",
+    style: { margin: '8px 14px', border: '2px solid var(--orange,#f57c00)' }
+  }, eateElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         fontWeight: 700,
@@ -3153,13 +3079,13 @@ function ClientClosing({
         fontSize: 13,
         padding: '6px 10px'
       }
-    }), contestDate !== cl.date && /*#__PURE__*/React.createElement("div", {
+    }), contestDate !== contesting.date && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: 'var(--amber)',
         marginTop: 4
       }
-    }, "\u26A0\uFE0F Data ser\xE1 alterada de ", fmtDate(cl.date), " para ", fmtDate(contestDate))), (cl.courier_submission || []).map(s => /*#__PURE__*/React.createElement("div", {
+    }, "\u26A0\uFE0F Data ser\xE1 alterada de ", fmtDate(contesting.date), " para ", fmtDate(contestDate))), (contesting.courier_submission || []).map(s => /*#__PURE__*/React.createElement("div", {
       key: s.key,
       style: {
         display: 'flex',
@@ -3250,29 +3176,37 @@ function ClientClosing({
         padding: '9px'
       },
       onClick: () => setContesting(null)
-    }, "Cancelar"))) : /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        gap: 8
-      }
+    }, "Cancelar"))) ) : null, (() => {
+    const byDate = {};
+    pending.forEach(cl => {
+      if (!byDate[cl.date]) byDate[cl.date] = { date: cl.date, closings: [], total: 0 };
+      byDate[cl.date].closings.push(cl);
+      byDate[cl.date].total += (cl.courier_submission || []).reduce((a, x) => a + (x.qty || 0), 0);
+    });
+    return Object.values(byDate).sort((a, b) => b.date.localeCompare(a.date)).map(day => /*#__PURE__*/React.createElement("div", {
+      key: day.date,
+      className: "ocard",
+      style: { margin: '8px 14px' }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { fontWeight: 600, fontSize: 15 }
+    }, fmtDate(day.date)), /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 11, background: '#fff3e0', color: '#f57c00', borderRadius: 10, padding: '2px 8px' }
+    }, "⏳ Aguarda você")), /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 32, fontWeight: 700, color: 'var(--blue)', margin: '6px 0 14px' }
+    }, day.total + " entregas"), /*#__PURE__*/React.createElement("div", {
+      style: { display: 'flex', gap: 8 }
     }, /*#__PURE__*/React.createElement("button", {
       className: "btn btn-blue",
-      style: {
-        flex: 1,
-        padding: '10px',
-        fontSize: 13
-      },
-      onClick: () => confirm(cl)
-    }, "\u2705 Confirmar tudo"), /*#__PURE__*/React.createElement("button", {
-      className: "btn-sm",
-      style: {
-        flex: 1,
-        padding: '10px',
-        fontSize: 13
-      },
-      onClick: () => startContest(cl)
-    }, "\u270F\uFE0F Contestar")));
-  })), tab === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, myClosings.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
+      style: { flex: 1, padding: '10px', fontSize: 13 },
+      onClick: async () => { for (const closing of day.closings) await confirm(closing); }
+    }, "✅ Confirmar tudo"), /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-outline",
+      style: { flex: 1, padding: '10px', fontSize: 13 },
+      onClick: () => setContesting(day.closings[0])
+    }, "✏️ Contestar"))));
+  })())})), tab === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, myClosings.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
     icon: "\uD83D\uDCCB",
     text: "Nenhum fechamento no hist\xF3rico ainda."
   }) : myClosings.map(cl => {
