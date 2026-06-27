@@ -5710,7 +5710,7 @@ function AdminSettings({
     const { data: pt } = await db.from('price_tables').select('id').eq('is_default', true).single();
     if (pt) {
       setDefaultPriceTableId(pt.id);
-      const { data: pitems } = await db.from('price_items').select('*').eq('price_table_id', pt.id).order('sort_order');
+      const { data: pitems } = await db.from('price_items').select('*').eq('price_table_id', pt.id);
       if (pitems && pitems.length > 0) {
         setBairros(pitems.map(item => ({
           key: item.neighborhood_key,
