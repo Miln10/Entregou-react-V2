@@ -3476,13 +3476,13 @@ function CourierFin({
       const indirect = (teamData||[]).filter(c => direct.find(n => n.id === c.referred_by));
       setMyCouriers([...direct, ...indirect]);
     }
-    const [ordRes, closRes, cliRes, payRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
+    const [ordRes, closRes, cliRes, payRes, commRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }), db.from('daily_closings').select('*').eq('courier_id', profile.id).gte('date', (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-01'; })()).order('date', {
       ascending: false
     }), db.from('users').select('id,name').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
-    }).limit(5)]);
+    }).limit(5)], db.from('commission_entries').select('commission_amount,closing_id').eq('earner_id', profile.id)]);
     const orders = ordRes.data || [];
     const currOrders = orders.filter(o => {
       var _o$created_at, _o$created_at2;
@@ -3494,6 +3494,9 @@ function CourierFin({
     });
     const currEarnings = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
     const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status === 'agreed').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const currDeliveries = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').reduce((a, cl) => a + (cl.courier_submission || []).reduce((s2, item) => s2 + (+item.qty || 0), 0), 0);
+    const currWeekIds = new Set((closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').map(cl => cl.id));
+    const currCommissions = (commRes.data || []).filter(c => currWeekIds.has(c.closing_id)).reduce((a, c) => a + (+c.commission_amount || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
     // Build week days
@@ -3523,6 +3526,8 @@ function CourierFin({
       prevOrders,
       prevEarnings,
       prevPayment,
+      currDeliveries,
+      currCommissions,
       days
     });
     setClosings(closRes.data || []);
@@ -3705,6 +3710,8 @@ function CourierFin({
     prevOrders,
     prevEarnings,
     prevPayment,
+    currDeliveries,
+    currCommissions,
     days
   } = weekData;
 
@@ -3758,13 +3765,16 @@ function CourierFin({
     style: {
       color: 'var(--green)'
     }
-  }, fmtMoney(currEarnings)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(currEarnings + currCommissions)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "a receber")), /*#__PURE__*/React.createElement("div", {
+  }, "a receber"), currCommissions > 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "mlbl",
+    style: {fontSize: '0.72em', color: 'var(--muted)'}
+  }, fmtMoney(currEarnings) + " prop. + " + fmtMoney(currCommissions) + " rede") : null), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
+  }, currDeliveries), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3798,7 +3808,7 @@ function CourierFin({
       fontSize: 10,
       color: 'var(--text2)'
     }
-  }, /*#__PURE__*/React.createElement("span", null, "Seg ", fmtDate(wC.startStr)), /*#__PURE__*/React.createElement("span", null, "Dom ", fmtDate(wC.endStr)))), currOrders.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Seg ", fmtDate(wC.startStr)), /*#__PURE__*/React.createElement("span", null, "Dom ", fmtDate(wC.endStr)))), currDeliveries > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "stitle",
     style: {
       padding: '0 0 6px'
@@ -5393,9 +5403,9 @@ function ClientFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
+  }, currDeliveries), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "entregas"))), currOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, "entregas"))), currDeliveries === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "notice ni"
   }, "Nenhuma entrega esta semana ainda.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "stitle",
