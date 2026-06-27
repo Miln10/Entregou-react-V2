@@ -5270,21 +5270,16 @@ function ClientFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1);
     const from = getWeekBounds(-8).startStr;
-    const [or, pa] = await Promise.all([db.from('orders').select('id,courier_id,courier_name,courier_number,price,courier_price,created_at,neighborhood').eq('client_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
+    const { data: cls } = await db.from('daily_closings').select('id,courier_id,courier_name,courier_number,courier_value,date,courier_submission').eq('client_id', profile.id).eq('status', 'agreed').gte('date', from).order('date', {
       ascending: false
-    }), db.from('payments').select('*').eq('type', 'client_charge').eq('reference_id', profile.id).order('created_at', {
-      ascending: false
-    }).limit(20)]);
-    const orders = or.data || [];
-    const payments = pa.data || [];
-    const currOrders = orders.filter(o => {
-      var _o$created_at8, _o$created_at9;
-      return ((_o$created_at8 = o.created_at) === null || _o$created_at8 === void 0 ? void 0 : _o$created_at8.slice(0, 10)) >= wC.startStr && ((_o$created_at9 = o.created_at) === null || _o$created_at9 === void 0 ? void 0 : _o$created_at9.slice(0, 10)) <= wC.endStr;
     });
-    const prevOrders = orders.filter(o => {
-      var _o$created_at0, _o$created_at1;
-      return ((_o$created_at0 = o.created_at) === null || _o$created_at0 === void 0 ? void 0 : _o$created_at0.slice(0, 10)) >= wP.startStr && ((_o$created_at1 = o.created_at) === null || _o$created_at1 === void 0 ? void 0 : _o$created_at1.slice(0, 10)) <= wP.endStr;
-    });
+    const closings = (cls || []).map(c => ({
+      ...c,
+      price: c.courier_value,
+      created_at: c.date + 'T12:00:00'
+    }));
+    const currOrders = closings.filter(o => o.date >= wC.startStr && o.date <= wC.endStr);
+    const prevOrders = closings.filter(o => o.date >= wP.startStr && o.date <= wP.endStr);
     const sum = arr => arr.reduce((a, o) => a + (+o.price || 0), 0);
     const byCourier = {};
     currOrders.forEach(o => {
@@ -5299,7 +5294,6 @@ function ClientFin({
       byCourier[o.courier_id].count++;
       byCourier[o.courier_id].total += +o.price || 0;
     });
-    const prevPayment = payments.find(p => p.week_start === wP.startStr);
     setData({
       wC,
       wP,
@@ -5308,8 +5302,8 @@ function ClientFin({
       currTotal: sum(currOrders),
       prevTotal: sum(prevOrders),
       byCourier: Object.values(byCourier),
-      payments,
-      prevPayment
+      payments: [],
+      prevPayment: null
     });
     setLoading(false);
   }, [profile]);
@@ -5321,7 +5315,7 @@ function ClientFin({
     const sub = db.channel('cfin-client-' + profile.id).on('postgres_changes', {
       event: '*',
       schema: 'public',
-      table: 'orders',
+      table: 'daily_closings',
       filter: `client_id=eq.${profile.id}`
     }, load).subscribe();
     return () => db.removeChannel(sub);
