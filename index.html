@@ -5766,8 +5766,8 @@ function AdminSettings({
     })));
   };
   const saveNetworkPrices = async () => {
-    if (!user?.network_id) return;
-    const { data: nt } = await db.from('price_tables').select('id').eq('network_id', user.network_id).eq('is_default', true).single();
+    if (!selNetwork) return;
+    const { data: nt } = await db.from('price_tables').select('id').eq('network_id', selNetwork).eq('is_default', true).single();
     if (!nt) return;
     await db.from('price_items').delete().eq('price_table_id', nt.id);
     await db.from('price_items').insert(bairros.map((b, i) => ({
