@@ -3124,7 +3124,7 @@ function ClientClosing({
       style: { flex: 1, padding: '10px', fontSize: 13 },
       onClick: () => setContesting(day.closings[0])
     }, "✏️ Contestar"))));
-  })())})), tab === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, myClosings.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
+  })()), tab === 'history' && /*#__PURE__*/React.createElement(React.Fragment, null, myClosings.length === 0 ? /*#__PURE__*/React.createElement(Empty, {
     icon: "\uD83D\uDCCB",
     text: "Nenhum fechamento no hist\xF3rico ainda."
   }) : myClosings.map(cl => {
