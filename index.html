@@ -5675,6 +5675,8 @@ function AdminSettings({
   const [networks, setNetworks] = useState([]);
   const [clients, setClients] = useState([]);
   const [selNetwork, setSelNetwork] = useState('');
+  const [defaultPriceTableId, setDefaultPriceTableId] = useState(null);
+  const [defaultPriceTableId, setDefaultPriceTableId] = useState(null);
   const [selClient, setSelClient] = useState('');
   const [clientBairros, setClientBairros] = useState([]);
   const [newNetName, setNewNetName] = useState('');
@@ -5705,7 +5707,24 @@ function AdminSettings({
         entregador: v.entregador
       };
     });
-    setBairros(defaultBairros);
+    // Tenta carregar preços do banco de dados
+    const { data: pt } = await db.from('price_tables').select('id').eq('is_default', true).single();
+    if (pt) {
+      setDefaultPriceTableId(pt.id);
+      const { data: pitems } = await db.from('price_items').select('*').eq('price_table_id', pt.id).order('sort_order');
+      if (pitems && pitems.length > 0) {
+        setBairros(pitems.map(item => ({
+          key: item.neighborhood_key,
+          label: item.neighborhood_label,
+          cliente: item.client_price,
+          entregador: item.courier_price
+        })));
+      } else {
+        setBairros(defaultBairros);
+      }
+    } else {
+      setBairros(defaultBairros);
+    }
     // Carrega redes
     const {
       data: nets
@@ -5766,10 +5785,8 @@ function AdminSettings({
     })));
   };
   const saveNetworkPrices = async () => {
-    if (!selNetwork) return;
-    const { data: nt } = await db.from('price_tables').select('id').eq('network_id', selNetwork).eq('is_default', true).single();
-    if (!nt) return;
-    await db.from('price_items').delete().eq('price_table_id', nt.id);
+    if (!defaultPriceTableId) return;
+    await db.from('price_items').delete().eq('price_table_id', defaultPriceTableId);
     await db.from('price_items').insert(bairros.map((b, i) => ({
       neighborhood_key: b.key,
       neighborhood_label: b.label,
