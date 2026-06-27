@@ -3482,7 +3482,7 @@ function CourierFin({
       ascending: false
     }), db.from('users').select('id,name').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
-    }).limit(5)], db.from('commission_entries').select('commission_amount,closing_id').eq('earner_id', profile.id)]);
+    }).limit(5), db.from('commission_entries').select('commission_amount,closing_id').eq('earner_id', profile.id)]);
     const orders = ordRes.data || [];
     const currOrders = orders.filter(o => {
       var _o$created_at, _o$created_at2;
