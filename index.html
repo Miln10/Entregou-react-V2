@@ -3482,7 +3482,7 @@ function CourierFin({
       ascending: false
     }), db.from('users').select('id,name').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
-    }).limit(5), db.from('commission_entries').select('commission_amount,closing_id').eq('earner_id', profile.id)]);
+    }).limit(5), db.from('commission_entries').select('commission_amount,closing_id,daily_closings!inner(date,status)').eq('earner_id', profile.id)]);
     const orders = ordRes.data || [];
     const currOrders = orders.filter(o => {
       var _o$created_at, _o$created_at2;
@@ -3495,8 +3495,7 @@ function CourierFin({
     const currEarnings = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
     const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status === 'agreed').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
     const currDeliveries = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').reduce((a, cl) => a + (cl.courier_submission || []).reduce((s2, item) => s2 + (+item.qty || 0), 0), 0);
-    const currWeekIds = new Set((closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').map(cl => cl.id));
-    const currCommissions = (commRes.data || []).filter(c => currWeekIds.has(c.closing_id)).reduce((a, c) => a + (+c.commission_amount || 0), 0);
+    const currCommissions = (commRes.data || []).filter(c => { const d = c.daily_closings; return d && d.date >= wC.startStr && d.date <= wC.endStr && d.status === 'agreed'; }).reduce((a, c) => a + (+c.commission_amount || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
     // Build week days
