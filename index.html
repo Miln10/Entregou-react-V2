@@ -3525,8 +3525,8 @@ function CourierFin({
     style: {
       padding: '0 0 6px'
     }
-  }, "Entregas desta semana"), currOrders.map((o, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
+  }, "Entregas desta semana"), (days||[]).flatMap(d => (d.closings||[]).filter(cl => cl.status === 'agreed').flatMap(cl => (cl.courier_submission||[]).map(s => ({k: d.date + '-' + cl.id + '-' + s.key, date: d.date, label: s.label||s.key, qty: +s.qty||0})))).map((row, i) => /*#__PURE__*/React.createElement("div", {
+    key: row.k,
     style: {
       display: 'flex',
       alignItems: 'center',
@@ -3543,18 +3543,18 @@ function CourierFin({
       fontSize: 12,
       fontWeight: 500
     }
-  }, o.neighborhood || 'Entrega'), /*#__PURE__*/React.createElement("div", {
+  }, row.label), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: 'var(--text2)'
     }
-  }, fmtDate(o.created_at))), /*#__PURE__*/React.createElement("div", {
+  }, fmtDate(row.date + 'T12:00:00'))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
       color: 'var(--green)'
     }
-  }, fmtMoney(o.courier_price))))), /*#__PURE__*/React.createElement("div", {
+  }, row.qty, " entregas")))), /*#__PURE__*/React.createElement("div", {
     style: {
       margin: '16px 0 0',
       padding: '12px 14px',
