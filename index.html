@@ -5001,7 +5001,7 @@ function ClientFin({
         count: 0,
         total: 0
       };
-      byCourier[o.courier_id].count++;
+      byCourier[o.courier_id].count += (o.courier_submission||[]).reduce((acc,it)=>acc+(+it.qty||0),0);
       byCourier[o.courier_id].total += +o.price || 0;
     });
     setData({
@@ -5012,6 +5012,7 @@ function ClientFin({
       currTotal: sum(currOrders),
       prevTotal: sum(prevOrders),
       byCourier: Object.values(byCourier),
+      currDeliveries: currOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((acc,it)=>acc+(+it.qty||0),0),0),
       payments: [],
       prevPayment: null
     });
@@ -5059,7 +5060,8 @@ function ClientFin({
     prevTotal,
     byCourier,
     payments,
-    prevPayment
+    prevPayment,
+    currDeliveries
   } = data;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
@@ -5109,7 +5111,7 @@ function ClientFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, currOrders.length), /*#__PURE__*/React.createElement("div", {
+  }, currDeliveries), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), currOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "notice ni"
