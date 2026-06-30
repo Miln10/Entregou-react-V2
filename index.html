@@ -3671,7 +3671,7 @@ function CourierFin({
         color: 'var(--amber)',
         fontWeight: 600
       }
-    }, "\u23F3 Aguardando"), !hasClosing && !day.isFuture && /*#__PURE__*/React.createElement("span", {
+    }, "\u23F3 Aguardando"), !day.isFuture && !isLaunching && /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 10,
         padding: '2px 8px',
@@ -3736,7 +3736,7 @@ function CourierFin({
           color: si.color
         }
       }, si.icon, " ", total, " entregas \u2014 ", si.label)));
-    })), !day.isFuture && !hasClosing && isLaunching && /*#__PURE__*/React.createElement("div", {
+    })), !day.isFuture && isLaunching && /*#__PURE__*/React.createElement("div", {
       style: {
         padding: '10px 12px',
         borderTop: '1px solid var(--border)'
@@ -3761,7 +3761,7 @@ function CourierFin({
       onChange: e => onSelectClient(e.target.value)
     }, /*#__PURE__*/React.createElement("option", {
       value: ""
-    }, "\u2014 Selecione \u2014"), clients.map(x => /*#__PURE__*/React.createElement("option", {
+    }, "\u2014 Selecione \u2014"), clients.filter(x => !todaySubmissions.find(s => s.client_id === x.id)).map(x => /*#__PURE__*/React.createElement("option", {
       key: x.id,
       value: x.id
     }, x.name)))), priceItems.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
@@ -3847,7 +3847,7 @@ function CourierFin({
         width: '100%',
         textAlign: 'center'
       }
-    }, "Cancelar")), !day.isFuture && !hasClosing && !isLaunching && /*#__PURE__*/React.createElement("div", {
+    }, "Cancelar")), !day.isFuture && !isLaunching && /*#__PURE__*/React.createElement("div", {
       style: {
         padding: '8px 12px',
         borderTop: '1px solid var(--border)'
