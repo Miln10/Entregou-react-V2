@@ -10835,11 +10835,92 @@ function AdminRelatorio({
             ))
     )));
 }
+
+function NetworkAdmin() {
+  var toast = useToast();
+  var _s0 = useState([]); var networks = _s0[0]; var setNetworks = _s0[1];
+  var _s1 = useState([]); var allUsers = _s1[0]; var setAllUsers = _s1[1];
+  var _s2 = useState(true); var loading = _s2[0]; var setLoading = _s2[1];
+  var _s3 = useState(''); var newNetName = _s3[0]; var setNewNetName = _s3[1];
+  var _s4 = useState(false); var creating = _s4[0]; var setCreating = _s4[1];
+  var load = useCallback(async function() {
+    setLoading(true);
+    var results = await Promise.all([
+      db.from('networks').select('*').order('name'),
+      db.from('users').select('id,name,role,network_id').in('role', ['courier','client','n0']).order('name')
+    ]);
+    setNetworks(results[0].data || []);
+    setAllUsers(results[1].data || []);
+    setLoading(false);
+  }, []);
+  useEffect(function() { load(); }, [load]);
+  var createNet = async function() {
+    if (!newNetName.trim()) return;
+    setCreating(true);
+    var res = await db.from('networks').insert({ name: newNetName.trim() });
+    if (res.error) toast('Erro: ' + res.error.message);
+    else { setNewNetName(''); await load(); toast('Rede criada!'); }
+    setCreating(false);
+  };
+  var assignUser = async function(userId, netId) {
+    await db.from('users').update({ network_id: netId }).eq('id', userId);
+    load();
+  };
+  var removeUser = async function(userId) {
+    await db.from('users').update({ network_id: null }).eq('id', userId);
+    load();
+  };
+  if (loading) return /*#__PURE__*/React.createElement("div", { style: { padding: 24, textAlign: 'center', color: 'var(--text2)' } }, "Carregando...");
+  var unassigned = allUsers.filter(function(u) { return !u.network_id; });
+  var netCouriers = function(id) { return allUsers.filter(function(u) { return u.network_id === id && u.role !== 'client'; }); };
+  var netClients = function(id) { return allUsers.filter(function(u) { return u.network_id === id && u.role === 'client'; }); };
+  var freeCouriers = unassigned.filter(function(u) { return u.role !== 'client'; });
+  var freeClients = unassigned.filter(function(u) { return u.role === 'client'; });
+  return /*#__PURE__*/React.createElement("div", { style: { padding: '12px 14px' } },
+    /*#__PURE__*/React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 16 } },
+      /*#__PURE__*/React.createElement("input", { placeholder: "Nome da nova rede", value: newNetName, onChange: function(e) { setNewNetName(e.target.value); }, style: { flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14, background: 'var(--card)', color: 'var(--text)' } }),
+      /*#__PURE__*/React.createElement("button", { onClick: createNet, disabled: creating || !newNetName.trim(), className: "btn-sm accept" }, creating ? '...' : '+ Criar')
+    ),
+    networks.map(function(net) { return /*#__PURE__*/React.createElement("div", { key: net.id, style: { background: 'var(--card)', borderRadius: 12, padding: '12px 14px', marginBottom: 12, border: '1px solid var(--border)' } },
+      /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700, fontSize: 15, marginBottom: 10 } }, "🏢 " + net.name),
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', marginBottom: 4 } }, "Entregadores"),
+      netCouriers(net.id).length === 0 && /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: 'var(--text2)', fontStyle: 'italic', marginBottom: 4 } }, "Nenhum"),
+      netCouriers(net.id).map(function(u) { return /*#__PURE__*/React.createElement("div", { key: u.id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid var(--border)' } },
+        /*#__PURE__*/React.createElement("span", { style: { fontSize: 13 } }, "🚵 " + u.name),
+        /*#__PURE__*/React.createElement("button", { onClick: function() { removeUser(u.id); }, style: { background: 'var(--red-l)', color: 'var(--red)', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer' } }, "Remover")
+      ); }),
+      freeCouriers.length > 0 && /*#__PURE__*/React.createElement("select", { value: "", onChange: function(e) { if(e.target.value) assignUser(e.target.value, net.id); }, style: { marginTop: 6, fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', width: '100%', background: 'var(--card)', color: 'var(--text)' } },
+        /*#__PURE__*/React.createElement("option", { value: "" }, "+ Adicionar entregador"),
+        freeCouriers.map(function(u) { return /*#__PURE__*/React.createElement("option", { key: u.id, value: u.id }, u.name); })
+      ),
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', marginBottom: 4, marginTop: 12 } }, "Clientes"),
+      netClients(net.id).length === 0 && /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: 'var(--text2)', fontStyle: 'italic', marginBottom: 4 } }, "Nenhum"),
+      netClients(net.id).map(function(u) { return /*#__PURE__*/React.createElement("div", { key: u.id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid var(--border)' } },
+        /*#__PURE__*/React.createElement("span", { style: { fontSize: 13 } }, "🏪 " + u.name),
+        /*#__PURE__*/React.createElement("button", { onClick: function() { removeUser(u.id); }, style: { background: 'var(--red-l)', color: 'var(--red)', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer' } }, "Remover")
+      ); }),
+      freeClients.length > 0 && /*#__PURE__*/React.createElement("select", { value: "", onChange: function(e) { if(e.target.value) assignUser(e.target.value, net.id); }, style: { marginTop: 6, fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', width: '100%', background: 'var(--card)', color: 'var(--text)' } },
+        /*#__PURE__*/React.createElement("option", { value: "" }, "+ Adicionar cliente"),
+        freeClients.map(function(u) { return /*#__PURE__*/React.createElement("option", { key: u.id, value: u.id }, u.name); })
+      )
+    ); }),
+    unassigned.length > 0 && /*#__PURE__*/React.createElement("div", { style: { marginTop: 8, background: 'var(--amber-l)', borderRadius: 12, padding: '12px 14px' } },
+      /*#__PURE__*/React.createElement("div", { style: { fontWeight: 600, fontSize: 13, color: 'var(--amber)', marginBottom: 8 } }, "⚠️ Sem rede (" + unassigned.length + ")"),
+      unassigned.map(function(u) { return /*#__PURE__*/React.createElement("div", { key: u.id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', fontSize: 13 } },
+        /*#__PURE__*/React.createElement("span", null, (u.role === 'client' ? "🏪 " : "🚵 ") + u.name),
+        /*#__PURE__*/React.createElement("select", { value: "", onChange: function(e) { if(e.target.value) assignUser(u.id, e.target.value); }, style: { fontSize: 11, padding: '2px 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)' } },
+          /*#__PURE__*/React.createElement("option", { value: "" }, "Adicionar a..."),
+          networks.map(function(n) { return /*#__PURE__*/React.createElement("option", { key: n.id, value: n.id }, n.name); })
+        )
+      ); })
+    )
+  );
+}
 function AdminFin({
   setPage
 }) {
   const toast = useToast();
-  const [tab, setTab] = useState('cobrar'); // cobrar | pagar | indicacoes | historico
+  const [tab, setTab] = useState('cobrar'); // cobrar | pagar | indicacoes | historico | redes
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selWeek, setSelWeek] = useState(0); // 0=atual, -1=anterior
@@ -11137,7 +11218,7 @@ function AdminFin({
   }, "\uD83D\uDD17 Indica\xE7\xF5es"), /*#__PURE__*/React.createElement("button", {
     style: ts('historico'),
     onClick: () => setTab('historico')
-  }, "\uD83D\uDCCB Hist\xF3rico")), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCCB Hist\xF3rico"), /*#__PURE__*/React.createElement("button", {onClick: function() { setTab('redes'); }, className: ts('redes')}, "🌐 Redes")), tab === 'cobrar' && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '12px 14px 0'
     }
@@ -11433,7 +11514,7 @@ function AdminFin({
         ))
       );
     });
-  })())));
+  })())), tab === 'redes' && /*#__PURE__*/React.createElement(NetworkAdmin, null));
 }
 function App() {
   const {
