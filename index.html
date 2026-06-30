@@ -3063,6 +3063,10 @@ function ApproveTab({ loadAll, profile }) {
   }, [profile]);
 
   useEffect(() => { loadPending(); }, [loadPending]);
+  useEffect(() => {
+    if (!profile || !db) return;
+    db.from('daily_closings').select('client_id,client_name').eq('courier_id', profile.id).eq('date', localDateStr()).not('status','eq','returned_l0').then(({data}) => setTodaySubmissions(data||[]));
+  }, [profile, db]);
 
   useEffect(() => {
     if (!profile) return;
@@ -3169,6 +3173,7 @@ function CourierFin({
   const [submitting, setSubmitting] = useState(false);
   const [launchDay, setLaunchDay] = useState(null); // date string
   const [launchFor, setLaunchFor] = useState('self');
+  const [todaySubmissions, setTodaySubmissions] = useState([]);
   const [myCouriers, setMyCouriers] = useState([]);
   const _nowCF = new Date();
   const [histMonth, setHistMonth] = useState(_nowCF.getMonth() + 1);
@@ -3190,7 +3195,7 @@ function CourierFin({
       ascending: false
     }), db.from('daily_closings').select('*').eq('courier_id', profile.id).gte('date', (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-01'; })()).order('date', {
       ascending: false
-    }), db.from('users').select('id,name').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
+    }), db.from('users').select('id,name,network_id').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
     }).limit(5), db.from('commission_entries').select('commission_amount,closing_id,daily_closings!inner(date,status)').eq('earner_id', profile.id)]);
     const orders = ordRes.data || [];
@@ -3240,7 +3245,7 @@ function CourierFin({
       days
     });
     setClosings(closRes.data || []);
-    setClients(cliRes.data || []);
+    setClients((cliRes.data||[]).filter(c=>!profile.network_id||c.network_id===profile.network_id));
     setLoading(false);
   }, [profile]);
   useEffect(() => {
@@ -3336,6 +3341,7 @@ function CourierFin({
       return;
     }
     toast('Lançamento enviado! Aguardando aprovação. 📋');
+    setTodaySubmissions(prev=>[...prev.filter(x=>x.client_id!==selClient),{client_id:selClient,client_name:client&&client.name?client.name:''}]);
     setSelClient('');
     setQuantities({});
     setPriceItems([]);
@@ -3829,7 +3835,7 @@ function CourierFin({
       },
       onClick: submitClosing,
       disabled: submitting
-    }, submitting ? 'Enviando...' : 'Enviar para cliente confirmar')), /*#__PURE__*/React.createElement("button", {
+    }, submitting ? 'Enviando...' : (todaySubmissions.find(x=>x.client_id===selClient)&&selClient ? '⚠️ Já enviado — reenviar?' : 'Enviar para cliente confirmar'))), /*#__PURE__*/React.createElement("button", {
       onClick: () => setLaunchDay(null),
       style: {
         marginTop: 6,
