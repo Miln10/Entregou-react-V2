@@ -3046,17 +3046,9 @@ function ApproveTab({ loadAll, profile }) {
 
   const loadPending = useCallback(async () => {
     if (!profile) return;
-    // Buscar N1 diretos
-    const { data: directTeam } = await db.from('users').select('id,name,courier_number,referred_by').eq('role', 'courier').eq('referred_by', profile.id);
-    const n1Ids = (directTeam || []).map(u => u.id);
-    // Buscar N2 (indicados dos N1)
-    let n2Ids = [];
-    if (n1Ids.length) {
-      const { data: n2Team } = await db.from('users').select('id').eq('role', 'courier').in('referred_by', n1Ids);
-      n2Ids = (n2Team || []).map(u => u.id);
-    }
-    // Incluir o próprio N0 + N1 + N2
-    const allIds = [profile.id, ...n1Ids, ...n2Ids];
+    // Buscar toda a rede do N0
+    const { data: networkTeam } = await db.from('users').select('id').eq('role', 'courier').eq('network_id', profile.network_id);
+    const allIds = [profile.id, ...(networkTeam || []).map(u => u.id)];
     const { data } = await db.from('daily_closings').select('*').in('courier_id', allIds).eq('status', 'pending_l0').order('date', { ascending: false });
     setPending(data || []);
     setLoading(false);
@@ -3186,10 +3178,8 @@ function CourierFin({
     const from = wP.startStr;
     // Buscar indicados (só para N0)
     if (!profile.referred_by) {
-      const { data: teamData } = await db.from('users').select('id,name,courier_number,referred_by').eq('role','courier').neq('id', profile.id);
-      const direct = (teamData||[]).filter(c => c.referred_by === profile.id);
-      const indirect = (teamData||[]).filter(c => direct.find(n => n.id === c.referred_by));
-      setMyCouriers([...direct, ...indirect]);
+      const { data: teamData } = await db.from('users').select('id,name,courier_number,referred_by').eq('role','courier').eq('network_id', profile.network_id).neq('id', profile.id);
+      setMyCouriers(teamData || []);
     }
     const [ordRes, closRes, cliRes, payRes, commRes] = await Promise.all([db.from('orders').select('id,price,courier_price,gestora_amount,created_at,neighborhood,item_desc,status').eq('courier_id', profile.id).eq('status', 'done').gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
