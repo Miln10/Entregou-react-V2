@@ -3952,10 +3952,14 @@ function NewOrder({
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
   useEffect(() => {
-    db.from('users').select('id,name,address').eq('role', 'client').order('name').then(({
-      data
-    }) => setClients(data || []));
-  }, []);
+    if (profile?.role === 'client') {
+      setClients(profile ? [{id: profile.id, name: profile.name, address: profile.address || ''}] : []);
+    } else {
+      db.from('users').select('id,name,address').eq('role', 'client').order('name').then(({
+        data
+      }) => setClients(data || []));
+    }
+  }, [profile]);
   const onSelectClient = async id => {
     setSelClient(id);
     setQuantities({});
