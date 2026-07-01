@@ -3089,9 +3089,11 @@ function ApproveTab({ loadAll, profile }) {
   };
 
   const reject = async (cl) => {
-    await db.from('daily_closings').update({ status: 'rejected_l0', updated_at: localTimestamp() }).eq('id', cl.id);
+    setPending(prev => (prev || []).filter(p => p.id !== cl.id));
+    const { error } = await db.from('daily_closings').update({ status: 'returned_l0', updated_at: localTimestamp() }).eq('id', cl.id);
+    if (error) { toast('Erro ao devolver lançamento.'); loadPending(); return; }
     toast('❌ Lançamento devolvido para o entregador corrigir.');
-    loadPending(); if (loadAll) loadAll();
+    if (loadAll) loadAll();
   };
 
   if (loading) return React.createElement(Loading);
