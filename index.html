@@ -3523,7 +3523,7 @@ function CourierFin({
     style: {
       padding: '0 0 6px'
     }
-  }, "Entregas desta semana"), (days||[]).flatMap(d => (d.closings||[]).filter(cl => cl.status === 'agreed').flatMap(cl => (cl.courier_submission||[]).map(s => ({k: d.date + '-' + cl.id + '-' + s.key, date: d.date, label: s.label||s.key, qty: +s.qty||0})))).map((row, i) => /*#__PURE__*/React.createElement("div", {
+  }, "Entregas desta semana"), (days||[]).flatMap(d => (d.closings||[]).filter(cl => cl.status === 'agreed').flatMap(cl => (cl.courier_submission||[]).map(s => ({k: d.date + '-' + cl.id + '-' + s.key, date: d.date, label: s.label||s.key, qty: +s.qty||0, client: cl.client_name})))).map((row, i) => /*#__PURE__*/React.createElement("div", {
     key: row.k,
     style: {
       display: 'flex',
@@ -3546,7 +3546,13 @@ function CourierFin({
       fontSize: 11,
       color: 'var(--text2)'
     }
-  }, fmtDate(row.date + 'T12:00:00'))), /*#__PURE__*/React.createElement("div", {
+  }, fmtDate(row.date + 'T12:00:00')), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--text2)',
+      marginTop: 1
+    }
+  }, row.client)), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
