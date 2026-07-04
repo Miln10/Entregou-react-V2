@@ -10964,7 +10964,7 @@ function AdminFin({
     const totalReceita = wSummaries.reduce((a, r) => a + (+r.client_total || 0), 0);
     const totalRepasse = wSummaries.reduce((a, r) => a + (+r.courier_total_value || 0), 0);
     const totalGestora = totalReceita - totalRepasse;
-    const dsEntregas = wSummaries.reduce((a, r) => a + (+r.courier_total || 0), 0);
+    const dsEntregas = wClosings.reduce((a, cl) => { const items = cl.agreed_data || cl.courier_submission || []; return a + items.reduce((s, it) => s + (+(it.qty) || 0), 0); }, 0);
     // Group by client for "Cobrar clientes" tab
     const cliMap = {};
     wSummaries.forEach(r => {
