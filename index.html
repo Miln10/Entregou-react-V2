@@ -3189,7 +3189,7 @@ function CourierFin({
       ascending: false
     }), db.from('users').select('id,name,network_id').eq('role', 'client').order('name'), db.from('payments').select('*').eq('type', 'courier_payout').eq('reference_id', profile.id).gte('created_at', from + 'T00:00:00').order('created_at', {
       ascending: false
-    }).limit(5), db.from('commission_entries').select('commission_amount,closing_id,daily_closings!inner(date,status)').eq('earner_id', profile.id)]);
+    }).limit(5), db.from('commission_entries').select('commission_amount,production_amount,source_id,relationship,date,src:users!commission_entries_source_id_fkey(name)').eq('earner_id', profile.id).gte('date', from)]);
     const orders = ordRes.data || [];
     const currOrders = orders.filter(o => {
       var _o$created_at, _o$created_at2;
@@ -3205,6 +3205,11 @@ function CourierFin({
     const currCommissions = (commRes.data || []).filter(c => { const d = c.daily_closings; return d && d.date >= wC.startStr && d.date <= wC.endStr && d.status === 'agreed'; }).reduce((a, c) => a + (+c.commission_amount || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
+    const prevCommissions=(commRes.data||[]).filter(c=>c.date>=wP.startStr&&c.date<=wP.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0);
+    const commBySource={};
+    (commRes.data||[]).filter(c=>c.date>=wC.startStr&&c.date<=wC.endStr).forEach(c=>{const nm=(c.src&&c.src.name)||'Entregador';if(!commBySource[c.source_id])commBySource[c.source_id]={name:nm,amount:0,qty:0};commBySource[c.source_id].amount+=(+c.commission_amount||0);commBySource[c.source_id].qty+=(+c.production_amount||0);});
+    const prevCommBySource={};
+    (commRes.data||[]).filter(c=>c.date>=wP.startStr&&c.date<=wP.endStr).forEach(c=>{const nm=(c.src&&c.src.name)||'Entregador';if(!prevCommBySource[c.source_id])prevCommBySource[c.source_id]={name:nm,amount:0,qty:0};prevCommBySource[c.source_id].amount+=(+c.commission_amount||0);prevCommBySource[c.source_id].qty+=(+c.production_amount||0);});
     // Build week days
     const days = [];
     for (let i = 0; i < 7; i++) {
@@ -3234,6 +3239,9 @@ function CourierFin({
       prevPayment,
       currDeliveries,
       currCommissions,
+      prevCommissions,
+      commBySource,
+      prevCommBySource,
       days
     });
     setClosings(closRes.data || []);
@@ -3419,6 +3427,9 @@ function CourierFin({
     prevPayment,
     currDeliveries,
     currCommissions,
+    prevCommissions,
+    commBySource,
+    prevCommBySource,
     days
   } = weekData;
 
@@ -3477,10 +3488,10 @@ function CourierFin({
     }
   }, fmtMoney(currEarnings + currCommissions)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "a receber"), currCommissions > 0 ? /*#__PURE__*/React.createElement("div", {
+  }, "a receber"), currCommissions > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "mlbl",
     style: {fontSize: '0.72em', color: 'var(--muted)'}
-  }, fmtMoney(currEarnings) + " prop. + " + fmtMoney(currCommissions) + " rede") : null), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(currEarnings) + " prop. + " + fmtMoney(currCommissions) + " rede"), Object.values(commBySource||{}).map((s,i) => /*#__PURE__*/React.createElement("div", {key:i, style:{fontSize:'0.65em', color:'var(--muted)', paddingLeft:6}}, '\u21b3 ' + s.name + ': ' + s.qty + ' entregas \u2192 ' + fmtMoney(s.amount)))) : null), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
@@ -3587,7 +3598,7 @@ function CourierFin({
       fontWeight: 700,
       color: 'var(--green)'
     }
-  }, fmtMoney(prevEarnings))), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(prevEarnings + prevCommissions))), prevCommissions > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {style:{fontSize:12, color:'var(--text2)', paddingTop:4}}, fmtMoney(prevEarnings) + " prop. + " + fmtMoney(prevCommissions) + " rede"), Object.values(prevCommBySource||{}).map((s,i) => /*#__PURE__*/React.createElement("div", {key:i, style:{fontSize:11, color:'var(--text2)'}}, '\u21b3 ' + s.name + ': ' + s.qty + ' entregas \u2192 ' + fmtMoney(s.amount)))) : null, (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: 'var(--green)',
@@ -5021,7 +5032,6 @@ function ClientFin({
       prevTotal: sum(prevOrders),
       byCourier: Object.values(byCourier),
       currDeliveries: currOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((acc,it)=>acc+(+it.qty||0),0),0),
-      prevDeliveries: prevOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((acc,it)=>acc+(+it.qty||0),0),0),
       payments: [],
       prevPayment: null
     });
@@ -5070,8 +5080,7 @@ function ClientFin({
     byCourier,
     payments,
     prevPayment,
-    currDeliveries,
-    prevDeliveries
+    currDeliveries
   } = data;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
@@ -5273,7 +5282,7 @@ function ClientFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, prevDeliveries), /*#__PURE__*/React.createElement("div", {
+  }, prevOrders.length), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
     className: "notice ns",
@@ -10957,7 +10966,7 @@ function AdminFin({
     const [summRes, closRes, commRes] = await Promise.all([
       db.from('daily_summaries').select('*').gte('date', wS.startStr).lte('date', wS.endStr),
       db.from('daily_closings').select('*').gte('date', wS.startStr).lte('date', wS.endStr).eq('status', 'agreed'),
-      db.from('commission_entries').select('commission_amount,earner_id,date,relationship').gte('date', wS.startStr).lte('date', wS.endStr)
+      db.from('commission_entries').select('commission_amount,earner_id,source_id,date,relationship').gte('date', wS.startStr).lte('date', wS.endStr)
     ]);
     const wSummaries = summRes.data || [];
     const wClosings = closRes.data || [];
@@ -10971,7 +10980,7 @@ function AdminFin({
     const cliMap = {};
     wSummaries.forEach(r => {
       const k = r.client_id;
-      if (!cliMap[k]) cliMap[k] = { id: k, name: r.client_name, total: 0, count: 0, wps: wS.startStr };
+      if (!cliMap[k]) cliMap[k] = { id: k, name: r.client_name, total: 0, count: 0, commission: 0, commBySource: {}, wps: wS.startStr };
       cliMap[k].total += (+r.client_total || 0);
       cliMap[k].count += (+r.courier_total || 0);
     });
@@ -10979,9 +10988,18 @@ function AdminFin({
     const couMap = {};
     wClosings.forEach(cl => {
       const k = cl.courier_id;
-      if (!couMap[k]) couMap[k] = { id: k, name: cl.courier_name, number: cl.courier_number, total: 0, count: 0 };
+      if (!couMap[k]) couMap[k] = { id: k, name: cl.courier_name, number: cl.courier_number, total: 0, count: 0, commission: 0, commBySource: {} };
       couMap[k].total += (+cl.courier_value || 0);
       (cl.courier_submission || []).forEach(item => { couMap[k].count += (+item.qty || 0); });
+    });
+    // Merge commission_entries into couMap
+    wComms.forEach(c => {
+      const eid = c.earner_id;
+      if (!couMap[eid]) return;
+      couMap[eid].commission += (+c.commission_amount || 0);
+      const nm = c.source_id || 'unknown';
+      if (!couMap[eid].commBySource[nm]) couMap[eid].commBySource[nm] = {source_id: nm, amount: 0};
+      couMap[eid].commBySource[nm].amount += (+c.commission_amount || 0);
     });
     setData({
       totalReceita, totalRepasse, totalGestora, dsEntregas,
@@ -11326,7 +11344,11 @@ function AdminFin({
         fontWeight: 700,
         color: 'var(--green)'
       }
-    }, fmtMoney(co.total))), !ex && /*#__PURE__*/React.createElement("button", {
+    }, co.commission > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:"var(--text2)",textAlign:"right",fontWeight:400}}, "entregas: ", fmtMoney(co.total)),
+      /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:"var(--text2)",textAlign:"right",fontWeight:400}}, "rede: +", fmtMoney(co.commission)),
+      fmtMoney(co.total + co.commission)
+    ) : fmtMoney(co.total))), !ex && /*#__PURE__*/React.createElement("button", {
       className: "btn-sm",
       style: {
         width: '100%',
@@ -11335,7 +11357,7 @@ function AdminFin({
         borderColor: 'var(--green)',
         color: 'var(--green)'
       },
-      onClick: () => genPayout(co.id, co.name, co.total, wps, wpe)
+      onClick: () => genPayout(co.id, co.name, co.total + (co.commission||0), wps, wpe)
     }, "Preparar Pix de ", fmtMoney(co.total)), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
@@ -11351,7 +11373,7 @@ function AdminFin({
       }
     }, "\u23F3 Aguardando envio do Pix"), /*#__PURE__*/React.createElement("button", {
       className: "btn-sm progress",
-      onClick: () => confirmPayout(ex.id, co.name, co.total)
+      onClick: () => confirmPayout(ex.id, co.name, co.total + (co.commission||0))
     }, "\u2713 Pix enviado")), (ex === null || ex === void 0 ? void 0 : ex.status) === 'paid' && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
