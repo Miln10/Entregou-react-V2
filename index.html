@@ -3491,7 +3491,19 @@ function CourierFin({
   }, "a receber"), currCommissions > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "mlbl",
     style: {fontSize: '0.72em', color: 'var(--muted)'}
-  }, fmtMoney(currEarnings) + " prop. + " + fmtMoney(currCommissions) + " rede"), Object.values(commBySource||{}).map((s,i) => /*#__PURE__*/React.createElement("div", {key:i, style:{fontSize:'0.65em', color:'var(--muted)', paddingLeft:6}}, '\u21b3 ' + s.name + ': ' + s.qty + ' entregas \u2192 ' + fmtMoney(s.amount)))) : null), /*#__PURE__*/React.createElement("div", {
+  },
+  /*#__PURE__*/React.createElement("div",{style:{display:'flex',gap:5,marginTop:4,flexWrap:'wrap'}},
+    /*#__PURE__*/React.createElement("span",{style:{fontSize:10,background:'var(--bg2)',border:'0.5px solid var(--border)',borderRadius:5,padding:'2px 7px',color:'var(--text2)'}},"📦 ",fmtMoney(currEarnings)),
+    /*#__PURE__*/React.createElement("span",{style:{fontSize:10,background:'var(--blue-l)',border:'0.5px solid rgba(24,95,165,0.25)',borderRadius:5,padding:'2px 7px',color:'var(--blue)',fontWeight:500}},"🌐 +",fmtMoney(currCommissions))
+  ),
+  /*#__PURE__*/React.createElement("div",{style:{marginTop:8,background:'var(--blue-l)',borderRadius:8,padding:'8px 10px'}},
+    /*#__PURE__*/React.createElement("div",{style:{fontSize:10,color:'var(--blue)',fontWeight:600,marginBottom:5}},"🌐 Comissão de rede"),
+    Object.values(commBySource||{}).map((s,i)=>/*#__PURE__*/React.createElement("div",{key:i,style:{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text2)',padding:'2px 0'}},
+      /*#__PURE__*/React.createElement("span",null,s.name),
+      /*#__PURE__*/React.createElement("span",{style:{color:'var(--text2)'}},s.qty+" entregas"),
+      /*#__PURE__*/React.createElement("span",{style:{color:'var(--blue)',fontWeight:500}},fmtMoney(s.amount))
+    ))
+  )) : null), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
@@ -3598,7 +3610,10 @@ function CourierFin({
       fontWeight: 700,
       color: 'var(--green)'
     }
-  }, fmtMoney(prevEarnings + prevCommissions))), prevCommissions > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {style:{fontSize:12, color:'var(--text2)', paddingTop:4}}, fmtMoney(prevEarnings) + " prop. + " + fmtMoney(prevCommissions) + " rede"), Object.values(prevCommBySource||{}).map((s,i) => /*#__PURE__*/React.createElement("div", {key:i, style:{fontSize:11, color:'var(--text2)'}}, '\u21b3 ' + s.name + ': ' + s.qty + ' entregas \u2192 ' + fmtMoney(s.amount)))) : null, (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(prevEarnings + prevCommissions))), prevCommissions > 0 ? /*#__PURE__*/React.createElement("div",{style:{display:'flex',gap:5,marginTop:4,flexWrap:'wrap'}},
+    /*#__PURE__*/React.createElement("span",{style:{fontSize:10,background:'var(--bg2)',border:'0.5px solid var(--border)',borderRadius:5,padding:'2px 7px',color:'var(--text2)'}},"📦 ",fmtMoney(prevEarnings)),
+    /*#__PURE__*/React.createElement("span",{style:{fontSize:10,background:'var(--blue-l)',border:'0.5px solid rgba(24,95,165,0.25)',borderRadius:5,padding:'2px 7px',color:'var(--blue)',fontWeight:500}},"🌐 +",fmtMoney(prevCommissions))
+  ) : null, (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: 'var(--green)',
@@ -11333,7 +11348,8 @@ function AdminFin({
         fontSize: 14,
         fontWeight: 700
       }
-    }, "\uD83D\uDEF5 ", co.name, co.number ? ' #' + co.number : ''), /*#__PURE__*/React.createElement("div", {
+    }, "\uD83D\uDEF5 ", co.name, co.number ? ' #' + co.number : '',
+      co.commission > 0 ? /*#__PURE__*/React.createElement("span",{style:{fontSize:9,background:'var(--blue-l)',borderRadius:4,padding:'1px 5px',color:'var(--blue)',fontWeight:600,marginLeft:3}},"🌐 rede") : null), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         color: 'var(--text2)'
@@ -11344,11 +11360,14 @@ function AdminFin({
         fontWeight: 700,
         color: 'var(--green)'
       }
-    }, co.commission > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null,
-      /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:"var(--text2)",textAlign:"right",fontWeight:400}}, "entregas: ", fmtMoney(co.total)),
-      /*#__PURE__*/React.createElement("div", {style:{fontSize:11,color:"var(--text2)",textAlign:"right",fontWeight:400}}, "rede: +", fmtMoney(co.commission)),
-      fmtMoney(co.total + co.commission)
-    ) : fmtMoney(co.total))), !ex && /*#__PURE__*/React.createElement("button", {
+    },
+      /*#__PURE__*/React.createElement("div",{style:{fontSize:9,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2,textAlign:'right'}},"a pagar"),
+      /*#__PURE__*/React.createElement("div",{style:{fontSize:18,fontWeight:700,color:'var(--green)',textAlign:'right'}},fmtMoney(co.total+(co.commission||0))),
+      co.commission>0?/*#__PURE__*/React.createElement("div",{style:{display:'flex',gap:4,marginTop:5,justifyContent:'flex-end',flexWrap:'wrap'}},
+        /*#__PURE__*/React.createElement("span",{style:{fontSize:10,background:'var(--bg2)',border:'0.5px solid var(--border)',borderRadius:5,padding:'2px 6px',color:'var(--text2)'}},"📦 ",fmtMoney(co.total)),
+        /*#__PURE__*/React.createElement("span",{style:{fontSize:10,background:'var(--blue-l)',border:'0.5px solid rgba(24,95,165,0.25)',borderRadius:5,padding:'2px 6px',color:'var(--blue)',fontWeight:500}},"🌐 +",fmtMoney(co.commission))
+      ):null
+    )), !ex && /*#__PURE__*/React.createElement("button", {
       className: "btn-sm",
       style: {
         width: '100%',
@@ -11358,7 +11377,7 @@ function AdminFin({
         color: 'var(--green)'
       },
       onClick: () => genPayout(co.id, co.name, co.total + (co.commission||0), wps, wpe)
-    }, "Preparar Pix de ", fmtMoney(co.total)), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("div", {
+    }, "Enviar Pix · ", fmtMoney(co.total + (co.commission||0))), (ex === null || ex === void 0 ? void 0 : ex.status) === 'pending' && /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         gap: 8,
