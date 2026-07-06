@@ -5021,6 +5021,7 @@ function ClientFin({
       prevTotal: sum(prevOrders),
       byCourier: Object.values(byCourier),
       currDeliveries: currOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((acc,it)=>acc+(+it.qty||0),0),0),
+      prevDeliveries: prevOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((acc,it)=>acc+(+it.qty||0),0),0),
       payments: [],
       prevPayment: null
     });
@@ -5069,7 +5070,8 @@ function ClientFin({
     byCourier,
     payments,
     prevPayment,
-    currDeliveries
+    currDeliveries,
+    prevDeliveries
   } = data;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
@@ -5271,7 +5273,7 @@ function ClientFin({
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
-  }, prevOrders.length), /*#__PURE__*/React.createElement("div", {
+  }, prevDeliveries), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "entregas"))), (prevPayment === null || prevPayment === void 0 ? void 0 : prevPayment.status) === 'paid' ? /*#__PURE__*/React.createElement("div", {
     className: "notice ns",
