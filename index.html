@@ -3426,7 +3426,6 @@ function CourierFin({
     prevEarnings,
     prevPayment,
     currDeliveries,
-  prevDeliveries,
     currCommissions,
     prevCommissions,
     commBySource,
@@ -5103,7 +5102,8 @@ prevDeliveries: prevOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((ac
     byCourier,
     payments,
     prevPayment,
-    currDeliveries
+    currDeliveries,
+    prevDeliveries
   } = data;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
