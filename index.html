@@ -5157,7 +5157,7 @@ prevDeliveries: prevOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((ac
     className: "mval"
   }, currDeliveries), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "entregas"))), currOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, "entregas"))), /*#__PURE__*/React.createElement("div", {style:{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"1px solid var(--border)"}}, ['S','T','Q','Q','S','S','D'].map(function(_l,_i){var _q=(wC||[]).filter(function(_c){return((new Date(_c.date+'T12:00:00').getDay()+6)%7)===_i}).reduce(function(_s,_c){return _s+(_c.courier_submission||0)},0);return /*#__PURE__*/React.createElement("div",{key:_i,style:{textAlign:"center",flex:1}},/*#__PURE__*/React.createElement("div",{style:{fontSize:"11px",color:"var(--text2)"}},_l),/*#__PURE__*/React.createElement("div",{style:{fontWeight:"600",fontSize:"14px"}},_q||"—"));})), currOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "notice ni"
   }, "Nenhuma entrega esta semana ainda.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "stitle",
@@ -5309,7 +5309,7 @@ prevDeliveries: prevOrders.reduce((a,o)=>a+(o.courier_submission||[]).reduce((ac
     className: "mval"
   }, prevDeliveries), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
-  }, "entregas")), /*#__PURE__*/React.createElement("div", {
+  }, "entregas")), /*#__PURE__*/React.createElement("div", {style:{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"1px solid var(--border)"}}, ['S','T','Q','Q','S','S','D'].map(function(_l,_i){var _q=(wP||[]).filter(function(_c){return((new Date(_c.date+'T12:00:00').getDay()+6)%7)===_i}).reduce(function(_s,_c){return _s+(_c.courier_submission||0)},0);return /*#__PURE__*/React.createElement("div",{key:_i,style:{textAlign:"center",flex:1}},/*#__PURE__*/React.createElement("div",{style:{fontSize:"11px",color:"var(--text2)"}},_l),/*#__PURE__*/React.createElement("div",{style:{fontWeight:"600",fontSize:"14px"}},_q||"—"));})), /*#__PURE__*/React.createElement("div", {
     className: "mcard"
   }, /*#__PURE__*/React.createElement("div", {
     className: "mval"
