@@ -2774,6 +2774,7 @@ function ClientClosing({
   const toast = useToast();
   const [tab, setTab] = useState('pending');
   const [pending, setPending] = useState([]);
+  const [todaySubmissions, setTodaySubmissions] = useState([]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [contesting, setContesting] = useState(null);
