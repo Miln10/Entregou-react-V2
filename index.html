@@ -3072,6 +3072,7 @@ function ApproveTab({ loadAll, profile }) {
   const approve = async (cl) => {
     await db.from('daily_closings').update({ status: 'agreed', updated_at: localTimestamp() }).eq('id', cl.id);
     toast('✅ Aprovado! Enviado para o cliente confirmar.');
+    setPending(prev => prev.filter(x => x.id !== cl.id));
     loadPending(); if (loadAll) loadAll();
   };
 
