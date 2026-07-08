@@ -9928,6 +9928,13 @@ function AdminRelatorio({
         };
       });
     });
+    const _closingIds = (closRes.data || []).map(cl => cl.id);
+    if (_closingIds.length > 0) {
+      const _commQ = await db.from('commission_entries').select('commission_amount').in('closing_id', _closingIds);
+      expanded._commTotal = (_commQ.data || []).reduce((a,c) => a + (+c.commission_amount||0), 0);
+    } else {
+      expanded._commTotal = 0;
+    }
     setOrders(expanded);
     setNetworks(netRes.data || []);
     setCouriers(couRes.data || []);
@@ -10255,7 +10262,7 @@ function AdminRelatorio({
       fontSize: 16,
       color: 'var(--amber)'
     }
-  }, fmtMoney(totalGestora)), /*#__PURE__*/React.createElement("div", {
+  }, fmtMoney(totalGestora - (orders._commTotal || 0))), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "gestora"))), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -10273,7 +10280,7 @@ function AdminRelatorio({
     style: {
       fontSize: 16
     }
-  }, filtered.length), /*#__PURE__*/React.createElement("div", {
+  }, filtered.reduce((a,o) => a + (+o.qty||0), 0)), /*#__PURE__*/React.createElement("div", {
     className: "mlbl"
   }, "total entregas")), /*#__PURE__*/React.createElement("div", {
     className: "mcard",
