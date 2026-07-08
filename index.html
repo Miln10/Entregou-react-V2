@@ -10718,7 +10718,7 @@ function AdminFin({
   useEffect(() => {
     loadData();
   }, [selWeek]);
-  useEffect(function(){var sub=db.channel('admin-fin-dc').on('postgres_changes',{event:'*',schema:'public',table:'daily_closings'},function(){loadData();}).subscribe();return function(){db.removeChannel(sub);};}, [loadData]);
+  useEffect(function(){var sub=db.channel('admin-fin-dc').on('postgres_changes',{event:'*',schema:'public',table:'daily_closings'},function(){loadData();}).subscribe();return function(){db.removeChannel(sub);};}, []);
   const loadData = async () => {
     setLoading(true);
     const wS = getWeekBounds(selWeek);
