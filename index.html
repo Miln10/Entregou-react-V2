@@ -2926,10 +2926,10 @@ function CourierFin({
       var _o$created_at3, _o$created_at4;
       return ((_o$created_at3 = o.created_at) === null || _o$created_at3 === void 0 ? void 0 : _o$created_at3.slice(0, 10)) >= wP.startStr && ((_o$created_at4 = o.created_at) === null || _o$created_at4 === void 0 ? void 0 : _o$created_at4.slice(0, 10)) <= wP.endStr;
     });
-    const currEarnings = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
-    const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && cl.status === 'agreed').reduce((a, cl) => a + (+cl.courier_value || 0), 0);
-    const currDeliveries = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && cl.status === 'agreed').reduce((a, cl) => a + (cl.courier_submission || []).reduce((s2, item) => s2 + (+item.qty || 0), 0), 0);
-    const currCommissions = (commRes.data || []).filter(c => { const d = c.daily_closings; return d && d.date >= wC.startStr && d.date <= wC.endStr && d.status === 'agreed'; }).reduce((a, c) => a + (+c.commission_amount || 0), 0);
+    const currEarnings = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && ['submitted','agreed'].includes(cl.status)).reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const prevEarnings = (closRes.data || []).filter(cl => cl.date >= wP.startStr && cl.date <= wP.endStr && ['submitted','agreed'].includes(cl.status)).reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const currDeliveries = (closRes.data || []).filter(cl => cl.date >= wC.startStr && cl.date <= wC.endStr && ['submitted','agreed'].includes(cl.status)).reduce((a, cl) => a + (cl.courier_submission || []).reduce((s2, item) => s2 + (+item.qty || 0), 0), 0);
+    const currCommissions = (commRes.data || []).filter(c => { const d = c.daily_closings; return d && d.date >= wC.startStr && d.date <= wC.endStr && ['submitted','agreed'].includes(d.status); }).reduce((a, c) => a + (+c.commission_amount || 0), 0);
     const prevPayment = (payRes.data || []).find(p => p.week_start === wP.startStr);
 
     const prevCommissions=(commRes.data||[]).filter(c=>c.date>=wP.startStr&&c.date<=wP.endStr).reduce((a,c)=>a+(+c.commission_amount||0),0);
@@ -3279,7 +3279,7 @@ function CourierFin({
     style: {
       padding: '0 0 6px'
     }
-  }, "Entregas desta semana"), (days||[]).flatMap(d => (d.closings||[]).filter(cl => cl.status === 'agreed').flatMap(cl => (cl.courier_submission||[]).map(s => ({k: d.date + '-' + cl.id + '-' + s.key, date: d.date, label: s.label||s.key, qty: +s.qty||0, client: cl.client_name})))).map((row, i) => /*#__PURE__*/React.createElement("div", {
+  }, "Entregas desta semana"), (days||[]).flatMap(d => (d.closings||[]).filter(cl => ['submitted','agreed'].includes(cl.status)).flatMap(cl => (cl.courier_submission||[]).map(s => ({k: d.date + '-' + cl.id + '-' + s.key, date: d.date, label: s.label||s.key, qty: +s.qty||0, client: cl.client_name})))).map((row, i) => /*#__PURE__*/React.createElement("div", {
     key: row.k,
     style: {
       display: 'flex',
@@ -3371,7 +3371,7 @@ function CourierFin({
     const dt = parseDate(day.date + 'T12:00:00');
     const dayLabel = DAYS_PT[dt.getDay()] + ' ' + fmtDate(day.date);
     const hasClosing = day.closings.length > 0;
-    const confirmed = day.closings.filter(cl => cl.status === 'matched' || cl.status === 'agreed');
+    const confirmed = day.closings.filter(cl => cl.status === 'matched' || ['submitted','agreed'].includes(cl.status));
     const pending = day.closings.filter(cl => cl.status === 'pending');
     const isLaunching = launchDay === day.date;
     const totalEntregas = day.closings.reduce((a, cl) => {
@@ -10733,17 +10733,17 @@ function AdminFin({
     const wClosings = closRes.data || [];
     const wComms = commRes.data || [];
     // Summary cards — REGRAS seção 10
-    const totalReceita = wClosings.reduce((a, cl) => a + (+cl.client_value || 0), 0);
-    const totalRepasse = wClosings.reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const totalReceita = wSummaries.reduce((a, r) => a + (+r.client_total || 0), 0);
+    const totalRepasse = wSummaries.reduce((a, r) => a + (+r.courier_total_value || 0), 0);
     const totalGestora = totalReceita - totalRepasse;
     const dsEntregas = wClosings.reduce((a, cl) => { const items = cl.agreed_data || cl.courier_submission || []; return a + items.reduce((s, it) => s + (+(it.qty) || 0), 0); }, 0);
     // Group by client for "Cobrar clientes" tab
     const cliMap = {};
-    wClosings.forEach(cl => {
-      const k = cl.client_id;
-      if (!cliMap[k]) cliMap[k] = { id: k, name: cl.client_name, total: 0, count: 0, commission: 0, commBySource: {}, wps: wS.startStr };
-      cliMap[k].total += (+cl.client_value || 0);
-      cliMap[k].count += (cl.courier_submission || []).reduce((s, it) => s + (+it.qty || 0), 0);
+    wSummaries.forEach(r => {
+      const k = r.client_id;
+      if (!cliMap[k]) cliMap[k] = { id: k, name: r.client_name, total: 0, count: 0, commission: 0, commBySource: {}, wps: wS.startStr };
+      cliMap[k].total += (+r.client_total || 0);
+      cliMap[k].count += (+r.courier_total || 0);
     });
     // Group by courier for "Pagar entregadores" tab
     const couMap = {};
