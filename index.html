@@ -3959,7 +3959,12 @@ function ClientOrders({
     className: "tab-item active"
   }, /*#__PURE__*/React.createElement("span", {
     className: "tab-icon"
-  }, "\uD83D\uDCCB"), /*#__PURE__*/React.createElement("span", null, "Pedidos"))), /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDCCB"), /*#__PURE__*/React.createElement("span", null, "Pedidos")), /*#__PURE__*/React.createElement("button", {
+    className: "tab-item",
+    onClick: () => setPage('client-closing')
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "tab-icon"
+  }, "\u2705"), /*#__PURE__*/React.createElement("span", null, "Fechamento")), /*#__PURE__*/React.createElement("button", {
     className: "tab-item",
     onClick: () => setPage('client-fin')
   }, /*#__PURE__*/React.createElement("span", {
