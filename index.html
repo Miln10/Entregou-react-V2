@@ -9895,30 +9895,39 @@ function AdminRelatorio({
       to
     } = getPeriodRange();
     const [closRes, netRes, couRes, cliRes, priceRes] = await Promise.all([
-    db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_number,courier_submission,courier_value').in('status',['submitted','agreed']).gte('date', from).lte('date', to).order('date', {ascending: false}),
+    db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_number,courier_submission,client_value,courier_value').in('status',['submitted','agreed']).gte('date', from).lte('date', to).order('date', {ascending: false}),
     db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role','courier'), db.from('users').select('id,name,network_id').eq('role','client'),
     db.from('price_items').select('neighborhood_key,courier_price,client_price').eq('price_table_id','c8839e18-d04d-402c-9f8b-596ae6283f51')
     ]);
-    const priceMap = {};
-    (priceRes.data || []).forEach(p => { priceMap[p.neighborhood_key] = p; });
-    const expanded = (closRes.data || []).flatMap(cl =>
-      (cl.courier_submission || []).map(s => {
-        const pm = priceMap[s.key] || {};
+    const expanded = (closRes.data || []).flatMap(cl => {
+      const items = cl.courier_submission || [];
+      const totalQty = items.reduce((acc, i) => acc + (+i.qty || 0), 0);
+      const clVal = +cl.client_value || 0;
+      const couVal = +cl.courier_value || 0;
+      return items.map(s => {
         const qty = +s.qty || 0;
-        const cp = +pm.courier_price || 0;
-        const clp = +pm.client_price || 0;
+        const frac = totalQty > 0 ? qty / totalQty : 0;
+        const price = Math.round(clVal * frac * 100) / 100;
+        const cp = Math.round(couVal * frac * 100) / 100;
         return {
-          id: cl.id + '-' + s.key,
-          client_id: cl.client_id, client_name: cl.client_name,
-          courier_id: cl.courier_id, courier_name: cl.courier_name, courier_number: cl.courier_number,
-          neighborhood: s.label || s.key, qty,
-          price: clp * qty, courier_price: cp * qty,
-          gestora_amount: (clp - cp) * qty,
-          created_at: cl.date + 'T12:00:00', status: 'done',
+          id: cl.id,
+          key: s.key,
+          client_id: cl.client_id,
+          client_name: cl.client_name,
+          courier_id: cl.courier_id,
+          courier_name: cl.courier_name,
+          courier_number: cl.courier_number,
+          neighborhood: s.label || s.key,
+          qty,
+          price,
+          courier_price: cp,
+          gestora_amount: Math.round((price - cp) * 100) / 100,
+          created_at: cl.date + 'T12:00:00',
+          status: 'done',
           item_desc: qty + 'x ' + (s.label || s.key)
         };
-      })
-    );
+      });
+    });
     setOrders(expanded);
     setNetworks(netRes.data || []);
     setCouriers(couRes.data || []);
