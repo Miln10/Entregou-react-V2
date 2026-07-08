@@ -5022,7 +5022,7 @@ function ClientFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1);
     const from = getWeekBounds(-8).startStr;
-    const { data: cls } = await db.from('daily_closings').select('id,courier_id,courier_name,courier_number,courier_value,date,courier_submission').eq('client_id', profile.id).eq('status', 'agreed').gte('date', from).order('date', {
+    const { data: cls } = await db.from('daily_closings').select('id,courier_id,courier_name,courier_number,courier_value,date,courier_submission').eq('client_id', profile.id).in('status',['submitted','agreed']).gte('date', from).order('date', {
       ascending: false
     });
     const closings = (cls || []).map(c => ({
@@ -10170,7 +10170,7 @@ function AdminRelatorio({
       to
     } = getPeriodRange();
     const [closRes, netRes, couRes, cliRes, priceRes] = await Promise.all([
-    db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_number,courier_submission,courier_value').eq('status','agreed').gte('date', from).lte('date', to).order('date', {ascending: false}),
+    db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_number,courier_submission,courier_value').in('status',['submitted','agreed']).gte('date', from).lte('date', to).order('date', {ascending: false}),
     db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role','courier'), db.from('users').select('id,name,network_id').eq('role','client'),
     db.from('price_items').select('neighborhood_key,courier_price,client_price').eq('price_table_id','c8839e18-d04d-402c-9f8b-596ae6283f51')
     ]);
@@ -11001,7 +11001,7 @@ function AdminFin({
     const from = getWeekBounds(selWeek - 4).startStr;
     const [summRes, closRes, commRes] = await Promise.all([
       db.from('daily_summaries').select('*').gte('date', wS.startStr).lte('date', wS.endStr),
-      db.from('daily_closings').select('*').gte('date', wS.startStr).lte('date', wS.endStr).eq('status', 'agreed'),
+      db.from('daily_closings').select('*').gte('date', wS.startStr).lte('date', wS.endStr).in('status',['submitted','agreed']),
       db.from('commission_entries').select('commission_amount,earner_id,source_id,date,relationship').gte('date', wS.startStr).lte('date', wS.endStr)
     ]);
     const wSummaries = summRes.data || [];
