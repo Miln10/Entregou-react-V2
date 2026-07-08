@@ -5022,12 +5022,12 @@ function ClientFin({
     const wC = getWeekBounds(0),
       wP = getWeekBounds(-1);
     const from = getWeekBounds(-8).startStr;
-    const { data: cls } = await db.from('daily_closings').select('id,courier_id,courier_name,courier_number,courier_value,date,courier_submission').eq('client_id', profile.id).in('status',['submitted','agreed']).gte('date', from).order('date', {
+    const { data: cls } = await db.from('daily_closings').select('id,courier_id,courier_name,courier_number,courier_value,client_value,date,courier_submission').eq('client_id', profile.id).in('status',['submitted','agreed']).gte('date', from).order('date', {
       ascending: false
     });
     const closings = (cls || []).map(c => ({
       ...c,
-      price: c.courier_value,
+      price: c.client_value,
       created_at: c.date + 'T12:00:00'
     }));
     const currOrders = closings.filter(o => o.date >= wC.startStr && o.date <= wC.endStr);
