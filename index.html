@@ -11339,7 +11339,8 @@ function MinhaRedeScreen({setPage}) {
     const now = new Date(); const day = now.getDay();
     const mon = new Date(now); mon.setDate(now.getDate() - (day === 0 ? 6 : day - 1) + off * 7); mon.setHours(0,0,0,0);
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6); sun.setHours(23,59,59,999);
-    return {start: mon.toISOString().split('T')[0], end: sun.toISOString().split('T')[0]};
+    const ld = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    return {start: ld(mon), end: ld(sun)};
   };
   const load = useCallback(async () => {
     if (!profile) return;
