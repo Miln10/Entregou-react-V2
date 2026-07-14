@@ -2794,14 +2794,14 @@ function ApproveTab({ loadAll, profile }) {
     return () => db.removeChannel(sub);
   }, [profile, loadPending]);
 
-  const approve = async (cl) => {
+  const approve = async (cl) => {setPending(prev=>(prev||[]).filter(p=>p.id!==cl.id));
     await db.from('daily_closings').update({ status: 'agreed', updated_at: localTimestamp() }).eq('id', cl.id);
     toast('✅ Aprovado! Enviado para o cliente confirmar.');
     setPending(prev => prev.filter(x => x.id !== cl.id));
     if (loadAll) loadAll();
   };
 
-  const startEdit = (cl) => {
+  const startEdit = (cl) => {setPending(prev=>(prev||[]).filter(p=>p.id!==cl.id));
     const qty = {};
     (cl.courier_submission || []).forEach(s => { qty[s.key] = s.qty; });
     setEditQty(qty);
