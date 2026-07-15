@@ -10754,17 +10754,19 @@ function AdminFin({
     const wClosings = closRes.data || [];
     const wComms = commRes.data || [];
     // Summary cards — REGRAS seção 10
-    const totalReceita = wSummaries.reduce((a, r) => a + (+r.client_total || 0), 0);
-    const totalRepasse = wSummaries.reduce((a, r) => a + (+r.courier_total_value || 0), 0);
-    const totalGestora = totalReceita - totalRepasse;
+    const totalReceita = wClosings.reduce((a, cl) => a + (+cl.client_value || 0), 0);
+    const totalRepasse = wClosings.reduce((a, cl) => a + (+cl.courier_value || 0), 0);
+    const totalCommissions = wComms.reduce((a, c) => a + (+c.commission_amount || 0), 0);
+    const totalGestora = totalReceita - totalRepasse - totalCommissions;
     const dsEntregas = wClosings.reduce((a, cl) => { const items = cl.agreed_data || cl.courier_submission || []; return a + items.reduce((s, it) => s + (+(it.qty) || 0), 0); }, 0);
     // Group by client for "Cobrar clientes" tab
     const cliMap = {};
-    wSummaries.forEach(r => {
-      const k = r.client_id;
-      if (!cliMap[k]) cliMap[k] = { id: k, name: r.client_name, total: 0, count: 0, commission: 0, commBySource: {}, wps: wS.startStr };
-      cliMap[k].total += (+r.client_total || 0);
-      cliMap[k].count += (+r.courier_total || 0);
+    wClosings.forEach(cl => {
+      const k = cl.client_id;
+      if (!cliMap[k]) cliMap[k] = { id: k, name: cl.client_name, total: 0, count: 0, commission: 0, commBySource: {}, wps: wS.startStr };
+      cliMap[k].total += (+cl.client_value || 0);
+      const _items = cl.agreed_data || cl.courier_submission || [];
+      cliMap[k].count += _items.reduce((s, it) => s + (+(it.qty) || 0), 0);
     });
     // Group by courier for "Pagar entregadores" tab
     const couMap = {};
