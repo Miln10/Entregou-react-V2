@@ -2794,10 +2794,15 @@ function ApproveTab({ loadAll, profile }) {
     return () => db.removeChannel(sub);
   }, [profile, loadPending]);
 
-  const approve = async (cl) => {setPending(prev=>(prev||[]).filter(p=>p.id!==cl.id));
-    await db.from('daily_closings').update({ status: 'agreed', updated_at: localTimestamp() }).eq('id', cl.id);
+  const approve = async (cl) => {
+    setPending(prev=>(prev||[]).filter(p=>p.id!==cl.id));
+    const { error } = await db.from('daily_closings').update({ status: 'agreed', updated_at: localTimestamp() }).eq('id', cl.id);
+    if (error) {
+      toast('❌ Erro ao aprovar: ' + error.message);
+      loadPending();
+      return;
+    }
     toast('✅ Aprovado! Enviado para o cliente confirmar.');
-    setPending(prev => prev.filter(x => x.id !== cl.id));
     if (loadAll) loadAll();
   };
 
@@ -2810,7 +2815,12 @@ function ApproveTab({ loadAll, profile }) {
 
   const saveEdit = async (cl) => {
     const submission = (cl.courier_submission || []).map(s => ({ ...s, qty: +editQty[s.key] || 0 })).filter(s => s.qty > 0);
-    await db.from('daily_closings').update({ courier_submission: submission, status: 'agreed', updated_at: localTimestamp() }).eq('id', cl.id);
+    const { error } = await db.from('daily_closings').update({ courier_submission: submission, status: 'agreed', updated_at: localTimestamp() }).eq('id', cl.id);
+    if (error) {
+      toast('❌ Erro ao salvar: ' + error.message);
+      setEditing(null); loadPending();
+      return;
+    }
     toast('✅ Editado e aprovado! Enviado para o cliente.');
     setEditing(null); loadPending(); if (loadAll) loadAll();
   };
