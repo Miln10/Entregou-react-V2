@@ -11358,8 +11358,7 @@ function AdminFin({
 }
 function MinhaRedeScreen({setPage}) {
   const {profile} = useAuth();
-  const [n1List, setN1List] = useState([]);
-  const [n2List, setN2List] = useState([]);
+  const [team, setTeam] = useState([]);
   const [comms, setComms] = useState([]);
   const [earnings, setEarnings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -11375,14 +11374,10 @@ function MinhaRedeScreen({setPage}) {
     if (!profile) return;
     setLoading(true);
     const {start, end} = getRange(weekOff);
-    const {data: n1} = await db.from('users').select('id,name,courier_number').eq('referred_by', profile.id);
-    const n1ids = (n1 || []).map(u => u.id);
-    let n2 = [];
-    if (n1ids.length > 0) {
-      const r = await db.from('users').select('id,name,courier_number,referred_by').in('referred_by', n1ids);
-      n2 = r.data || [];
-    }
-    const allIds = [...n1ids, ...n2.map(u => u.id)];
+    // network_id (nao referred_by encadeado) \u2014 cobre toda a rede, qualquer profundidade. Mesmo padrao do ApproveTab.
+    const {data: teamData} = await db.from('users').select('id,name,courier_number,referred_by').eq('network_id', profile.network_id).eq('role','courier').neq('id', profile.id);
+    const teamList = teamData || [];
+    const allIds = teamList.map(u => u.id);
     let ce = [];
     let dc = [];
     if (allIds.length > 0) {
@@ -11393,7 +11388,7 @@ function MinhaRedeScreen({setPage}) {
       ce = ceRes.data || [];
       dc = dcRes.data || [];
     }
-    setN1List(n1 || []); setN2List(n2); setComms(ce); setEarnings(dc); setLoading(false);
+    setTeam(teamList); setComms(ce); setEarnings(dc); setLoading(false);
   }, [profile, weekOff]);
   useEffect(() => { load(); }, [load]);
   const bySource = {};
@@ -11407,8 +11402,17 @@ function MinhaRedeScreen({setPage}) {
     if (!byEarnings[dc.courier_id]) byEarnings[dc.courier_id] = 0;
     byEarnings[dc.courier_id] += +dc.courier_value || 0;
   });
+  // Classificacao de nivel relativo ao N0 (so pra exibir Pai/Avo e a comissao correspondente).
+  // Comissao continua limitada a pai/avo por regra de negocio \u2014 quem esta mais fundo na rede
+  // aparece em "Demais da rede", sem comissao, mas com o valor a receber dele mesmo.
+  const n1List = team.filter(u => u.referred_by === profile.id);
+  const n1IdSet = new Set(n1List.map(u => u.id));
+  const n2List = team.filter(u => n1IdSet.has(u.referred_by));
+  const n2IdSet = new Set(n2List.map(u => u.id));
+  const othersList = team.filter(u => !n1IdSet.has(u.id) && !n2IdSet.has(u.id));
   const totalN1 = n1List.reduce((s, u) => s + (bySource[u.id]?.amt || 0), 0);
   const totalN2 = n2List.reduce((s, u) => s + (bySource[u.id]?.amt || 0), 0);
+  const totalReceberRede = team.reduce((s, u) => s + (byEarnings[u.id] || 0), 0);
   const {start, end} = getRange(weekOff);
   const fmtD = d => d.slice(5).replace('-', '/');
   const n1Map = {};
@@ -11418,8 +11422,9 @@ function MinhaRedeScreen({setPage}) {
     const receber = byEarnings[u.id] || 0;
     const init = (u.name || u.courier_number || '?').split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
     const isN1 = lvl === 'N1';
-    const col = isN1 ? 'var(--amber)' : 'var(--purple)';
-    const colL = isN1 ? 'var(--amber-l)' : 'var(--purple-l)';
+    const isOutros = lvl === 'OUTROS';
+    const col = isOutros ? 'var(--blue)' : (isN1 ? 'var(--amber)' : 'var(--purple)');
+    const colL = isOutros ? 'var(--blue-l)' : (isN1 ? 'var(--amber-l)' : 'var(--purple-l)');
     const parentName = !isN1 ? (n1Map[u.referred_by] || null) : null;
     return /*#__PURE__*/React.createElement("div", {key: u.id, style: {background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--r)', margin: '0 16px 10px', padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, position: 'relative', overflow: 'hidden'}},
       /*#__PURE__*/React.createElement("div", {style: {position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: col}}),
@@ -11428,9 +11433,9 @@ function MinhaRedeScreen({setPage}) {
         /*#__PURE__*/React.createElement("div", {style: {fontSize: 14, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}, u.name || u.courier_number || '-'),
         /*#__PURE__*/React.createElement("div", {className: "mlbl"}, c.qty > 0 ? (c.qty + ' entregas esta semana') : ('sem atividade' + (parentName ? ' \u00b7 via ' + parentName : ''))),
         /*#__PURE__*/React.createElement("div", {className: "mlbl", style: {color: receber > 0 ? 'var(--green)' : undefined, fontWeight: receber > 0 ? 600 : undefined}}, "A receber: " + fmtMoney(receber)),
-        /*#__PURE__*/React.createElement("span", {style: {display: 'inline-flex', fontSize: 10, fontWeight: 700, padding: '2px 7px', marginTop: 4, borderRadius: 5, background: colL, color: col}}, lvl + (isN1 ? ' \u00b7 Pai' : ' \u00b7 Av\u00f4'))
+        !isOutros && /*#__PURE__*/React.createElement("span", {style: {display: 'inline-flex', fontSize: 10, fontWeight: 700, padding: '2px 7px', marginTop: 4, borderRadius: 5, background: colL, color: col}}, lvl + (isN1 ? ' \u00b7 Pai' : ' \u00b7 Av\u00f4'))
       ),
-      /*#__PURE__*/React.createElement("div", {style: {textAlign: 'right', flexShrink: 0}},
+      !isOutros && /*#__PURE__*/React.createElement("div", {style: {textAlign: 'right', flexShrink: 0}},
         /*#__PURE__*/React.createElement("div", {style: {fontSize: 15, fontWeight: 700, color: c.amt > 0 ? col : 'var(--text2)'}}, fmtMoney(c.amt)),
         /*#__PURE__*/React.createElement("div", {className: "mlbl"}, isN1 ? '\u00d7R$0,70/entrega' : '\u00d7R$0,30/entrega')
       )
@@ -11452,10 +11457,17 @@ function MinhaRedeScreen({setPage}) {
       ),
       /*#__PURE__*/React.createElement("div", {style: {display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: '10px 16px 4px'}},
         /*#__PURE__*/React.createElement("div", {className: "mcard"},
-          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "Indicados"),
-          /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--blue)'}}, n1List.length + n2List.length),
-          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, n1List.length + " N1 \u00b7 " + n2List.length + " N2")
+          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "Rede"),
+          /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--blue)'}}, team.length),
+          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, n1List.length + " N1 \u00b7 " + n2List.length + " N2 \u00b7 " + othersList.length + " outros")
         ),
+        /*#__PURE__*/React.createElement("div", {className: "mcard"},
+          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "A receber (rede toda)"),
+          /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--green)'}}, fmtMoney(totalReceberRede)),
+          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "nesta semana")
+        )
+      ),
+      /*#__PURE__*/React.createElement("div", {style: {display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: '0 16px 4px'}},
         /*#__PURE__*/React.createElement("div", {className: "mcard"},
           /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "Comiss\u00e3o"),
           /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--amber)'}}, fmtMoney(totalN1 + totalN2)),
@@ -11472,13 +11484,15 @@ function MinhaRedeScreen({setPage}) {
           /*#__PURE__*/React.createElement("span", {style: {fontSize: 13, fontWeight: 700, color: 'var(--purple)'}}, fmtMoney(totalN2))
         )
       ),
-      n1List.length === 0 && n2List.length === 0
-        ? /*#__PURE__*/React.createElement("div", {style: {textAlign: 'center', padding: '40px 20px', color: 'var(--text2)', fontSize: 14}}, "Voc\u00ea ainda n\u00e3o tem indicados.")
+      team.length === 0
+        ? /*#__PURE__*/React.createElement("div", {style: {textAlign: 'center', padding: '40px 20px', color: 'var(--text2)', fontSize: 14}}, "Sua rede ainda n\u00e3o tem entregadores vinculados.")
         : /*#__PURE__*/React.createElement(React.Fragment, null,
             n1List.length > 0 ? /*#__PURE__*/React.createElement("div", {className: "stitle"}, "N\u00edvel 1 \u2014 indicados diretos") : null,
             n1List.map(u => mkCard(u, 'N1')),
             n2List.length > 0 ? /*#__PURE__*/React.createElement("div", {className: "stitle"}, "N\u00edvel 2 \u2014 indicados dos seus N1") : null,
-            n2List.map(u => mkCard(u, 'N2'))
+            n2List.map(u => mkCard(u, 'N2')),
+            othersList.length > 0 ? /*#__PURE__*/React.createElement("div", {className: "stitle"}, "Demais da rede \u2014 3+ n\u00edveis (sem comiss\u00e3o pra voc\u00ea, mas voc\u00ea acompanha o valor a receber)") : null,
+            othersList.map(u => mkCard(u, 'OUTROS'))
           )
     ),
     /*#__PURE__*/React.createElement("div", {className: "tabbar"},
