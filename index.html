@@ -10758,7 +10758,7 @@ function AdminFin({
     const [summRes, closRes, commRes] = await Promise.all([
       db.from('daily_summaries').select('*').gte('date', wS.startStr).lte('date', wS.endStr),
       db.from('daily_closings').select('*').gte('date', wS.startStr).lte('date', wS.endStr).in('status',['submitted','agreed']),
-      db.from('commission_entries').select('commission_amount,earner_id,source_id,date,relationship').gte('date', wS.startStr).lte('date', wS.endStr)
+      db.from('commission_entries').select('commission_amount,earner_id,source_id,date,relationship,closing_id').gte('date', wS.startStr).lte('date', wS.endStr)
     ]);
     const wSummaries = summRes.data || [];
     const wClosings = closRes.data || [];
@@ -10769,15 +10769,24 @@ function AdminFin({
     const totalCommissions = wComms.reduce((a, c) => a + (+c.commission_amount || 0), 0);
     const totalGestora = totalReceita - totalRepasse - totalCommissions;
     const dsEntregas = wClosings.reduce((a, cl) => { const items = cl.agreed_data || cl.courier_submission || []; return a + items.reduce((s, it) => s + (+(it.qty) || 0), 0); }, 0);
+    // closing_id -> client_id, para atribuir comissao ao cliente que gerou a entrega
+    const closingToClient = {};
+    wClosings.forEach(cl => { closingToClient[cl.id] = cl.client_id; });
     // Group by client for "Cobrar clientes" tab
     const cliMap = {};
     wClosings.forEach(cl => {
       const k = cl.client_id;
-      if (!cliMap[k]) cliMap[k] = { id: k, name: cl.client_name, total: 0, count: 0, commission: 0, commBySource: {}, wps: wS.startStr };
+      if (!cliMap[k]) cliMap[k] = { id: k, name: cl.client_name, total: 0, count: 0, courierTotal: 0, commissionTotal: 0, commission: 0, commBySource: {}, wps: wS.startStr };
       cliMap[k].total += (+cl.client_value || 0);
+      cliMap[k].courierTotal += (+cl.courier_value || 0);
       const _items = cl.agreed_data || cl.courier_submission || [];
       cliMap[k].count += _items.reduce((s, it) => s + (+(it.qty) || 0), 0);
     });
+    wComms.forEach(c => {
+      const clientId = closingToClient[c.closing_id];
+      if (clientId && cliMap[clientId]) cliMap[clientId].commissionTotal += (+c.commission_amount || 0);
+    });
+    Object.values(cliMap).forEach(cl => { cl.gestora = cl.total - cl.courierTotal - cl.commissionTotal; });
     // Group by courier for "Pagar entregadores" tab
     const couMap = {};
     wClosings.forEach(cl => {
@@ -11065,7 +11074,14 @@ function AdminFin({
         fontSize: 12,
         color: 'var(--text2)'
       }
-    }, cl.count, " entrega", cl.count !== 1 ? 's' : '', " \xB7 ", fmtDate(wS.startStr), " a ", fmtDate(wS.endStr))), /*#__PURE__*/React.createElement("div", {
+    }, cl.count, " entrega", cl.count !== 1 ? 's' : '', " \xB7 ", fmtDate(wS.startStr), " a ", fmtDate(wS.endStr)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: cl.gestora >= 0 ? 'var(--green)' : 'var(--red)',
+        fontWeight: 600,
+        marginTop: 2
+      }
+    }, "Margem: ", fmtMoney(cl.gestora))), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 18,
         fontWeight: 700,
@@ -11345,6 +11361,7 @@ function MinhaRedeScreen({setPage}) {
   const [n1List, setN1List] = useState([]);
   const [n2List, setN2List] = useState([]);
   const [comms, setComms] = useState([]);
+  const [earnings, setEarnings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [weekOff, setWeekOff] = useState(0);
   const getRange = (off) => {
@@ -11367,11 +11384,16 @@ function MinhaRedeScreen({setPage}) {
     }
     const allIds = [...n1ids, ...n2.map(u => u.id)];
     let ce = [];
+    let dc = [];
     if (allIds.length > 0) {
-      const r = await db.from('commission_entries').select('source_id,commission_amount,production_amount').eq('earner_id', profile.id).in('source_id', allIds).gte('date', start).lte('date', end);
-      ce = r.data || [];
+      const [ceRes, dcRes] = await Promise.all([
+        db.from('commission_entries').select('source_id,commission_amount,production_amount').eq('earner_id', profile.id).in('source_id', allIds).gte('date', start).lte('date', end),
+        db.from('daily_closings').select('courier_id,courier_value').in('courier_id', allIds).in('status', ['submitted','agreed']).gte('date', start).lte('date', end)
+      ]);
+      ce = ceRes.data || [];
+      dc = dcRes.data || [];
     }
-    setN1List(n1 || []); setN2List(n2); setComms(ce); setLoading(false);
+    setN1List(n1 || []); setN2List(n2); setComms(ce); setEarnings(dc); setLoading(false);
   }, [profile, weekOff]);
   useEffect(() => { load(); }, [load]);
   const bySource = {};
@@ -11379,6 +11401,11 @@ function MinhaRedeScreen({setPage}) {
     if (!bySource[c.source_id]) bySource[c.source_id] = {qty: 0, amt: 0};
     bySource[c.source_id].qty += +c.production_amount || 0;
     bySource[c.source_id].amt += +c.commission_amount || 0;
+  });
+  const byEarnings = {};
+  earnings.forEach(dc => {
+    if (!byEarnings[dc.courier_id]) byEarnings[dc.courier_id] = 0;
+    byEarnings[dc.courier_id] += +dc.courier_value || 0;
   });
   const totalN1 = n1List.reduce((s, u) => s + (bySource[u.id]?.amt || 0), 0);
   const totalN2 = n2List.reduce((s, u) => s + (bySource[u.id]?.amt || 0), 0);
@@ -11388,6 +11415,7 @@ function MinhaRedeScreen({setPage}) {
   n1List.forEach(u => { n1Map[u.id] = u.name || u.courier_number || '?'; });
   const mkCard = (u, lvl) => {
     const c = bySource[u.id] || {qty: 0, amt: 0};
+    const receber = byEarnings[u.id] || 0;
     const init = (u.name || u.courier_number || '?').split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
     const isN1 = lvl === 'N1';
     const col = isN1 ? 'var(--amber)' : 'var(--purple)';
@@ -11399,6 +11427,7 @@ function MinhaRedeScreen({setPage}) {
       /*#__PURE__*/React.createElement("div", {style: {flex: 1, minWidth: 0}},
         /*#__PURE__*/React.createElement("div", {style: {fontSize: 14, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}, u.name || u.courier_number || '-'),
         /*#__PURE__*/React.createElement("div", {className: "mlbl"}, c.qty > 0 ? (c.qty + ' entregas esta semana') : ('sem atividade' + (parentName ? ' \u00b7 via ' + parentName : ''))),
+        /*#__PURE__*/React.createElement("div", {className: "mlbl", style: {color: receber > 0 ? 'var(--green)' : undefined, fontWeight: receber > 0 ? 600 : undefined}}, "A receber: " + fmtMoney(receber)),
         /*#__PURE__*/React.createElement("span", {style: {display: 'inline-flex', fontSize: 10, fontWeight: 700, padding: '2px 7px', marginTop: 4, borderRadius: 5, background: colL, color: col}}, lvl + (isN1 ? ' \u00b7 Pai' : ' \u00b7 Av\u00f4'))
       ),
       /*#__PURE__*/React.createElement("div", {style: {textAlign: 'right', flexShrink: 0}},
