@@ -9912,18 +9912,24 @@ function AdminRelatorio({
     const [closRes, netRes, couRes, cliRes, priceRes] = await Promise.all([
     db.from('daily_closings').select('id,date,client_id,client_name,courier_id,courier_name,courier_number,courier_submission,client_value,courier_value').in('status',['submitted','agreed']).gte('date', from).lte('date', to).order('date', {ascending: false}),
     db.from('networks').select('*'), db.from('users').select('id,name,courier_number,referred_by,network_id').eq('role','courier'), db.from('users').select('id,name,network_id').eq('role','client'),
-    db.from('price_items').select('neighborhood_key,courier_price,client_price').eq('price_table_id','c8839e18-d04d-402c-9f8b-596ae6283f51')
+    db.from('price_tables').select('id,client_id,is_default,price_items(neighborhood_key,courier_price,client_price)')
     ]);
+    const _defPM = {};
+    const _cliPM = {};
+    (priceRes.data || []).forEach(pt => {
+      const bk = {};
+      (pt.price_items || []).forEach(pi => { bk[pi.neighborhood_key] = {cv: +(pi.client_price||0), cp: +(pi.courier_price||0)}; });
+      if (pt.is_default) Object.assign(_defPM, bk);
+      if (pt.client_id) _cliPM[pt.client_id] = bk;
+    });
     const expanded = (closRes.data || []).flatMap(cl => {
       const items = cl.courier_submission || [];
-      const totalQty = items.reduce((acc, i) => acc + (+i.qty || 0), 0);
-      const clVal = +cl.client_value || 0;
-      const couVal = +cl.courier_value || 0;
+      const _getP = (cid, key) => (_cliPM[cid]||{})[key] || _defPM[key] || {cv:0,cp:0};
       return items.map(s => {
-        const qty = +s.qty || 0;
-        const frac = totalQty > 0 ? qty / totalQty : 0;
-        const price = Math.round(clVal * frac * 100) / 100;
-        const cp = Math.round(couVal * frac * 100) / 100;
+      const qty = +s.qty || 0;
+      const pm = _getP(cl.client_id, s.key);
+      const price = Math.round(pm.cv * qty * 100) / 100;
+      const cp = Math.round(pm.cp * qty * 100) / 100;
         return {
           id: cl.id,
           key: s.key,
