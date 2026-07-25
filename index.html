@@ -11394,8 +11394,8 @@ function MinhaRedeScreen({setPage}) {
       ]);
       ce = ceRes.data || [];
       dc = dcRes.data || [];
-      const ownRes = await db.from('daily_closings').select('courier_value').eq('courier_id', profile.id).in('status', ['submitted','agreed']).gte('date', start).lte('date', end)
-        .catch(() => ({data: []}));
+      let ownRes = {data: []};
+      try { ownRes = await db.from('daily_closings').select('courier_value').eq('courier_id', profile.id).in('status', ['submitted','agreed']).gte('date', start).lte('date', end); } catch(e) {}
     }
     setTeam(teamList); setComms(ce); setEarnings(dc); setOwnClosings(ownRes.data || []); setLoading(false);
   }, [profile, weekOff]);
