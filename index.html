@@ -11388,13 +11388,14 @@ function MinhaRedeScreen({setPage}) {
     let ce = [];
     let dc = [];
     if (allIds.length > 0) {
-      const [ceRes, dcRes, ownRes] = await Promise.all([
+      const [ceRes, dcRes] = await Promise.all([
         db.from('commission_entries').select('source_id,commission_amount,production_amount').eq('earner_id', profile.id).in('source_id', allIds).gte('date', start).lte('date', end),
-        db.from('daily_closings').select('courier_id,courier_value').in('courier_id', allIds).in('status', ['submitted','agreed']).gte('date', start).lte('date', end),
-        db.from('daily_closings').select('courier_value').eq('courier_id', profile.id).in('status', ['submitted','agreed']).gte('date', start).lte('date', end)
+        db.from('daily_closings').select('courier_id,courier_value').in('courier_id', allIds).in('status', ['submitted','agreed']).gte('date', start).lte('date', end)
       ]);
       ce = ceRes.data || [];
       dc = dcRes.data || [];
+      const ownRes = await db.from('daily_closings').select('courier_value').eq('courier_id', profile.id).in('status', ['submitted','agreed']).gte('date', start).lte('date', end)
+        .catch(() => ({data: []}));
     }
     setTeam(teamList); setComms(ce); setEarnings(dc); setOwnClosings(ownRes.data || []); setLoading(false);
   }, [profile, weekOff]);
