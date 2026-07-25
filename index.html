@@ -11369,7 +11369,6 @@ function MinhaRedeScreen({setPage}) {
   const [earnings, setEarnings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [weekOff, setWeekOff] = useState(0);
-  const [ownClosings, setOwnClosings] = useState([]);
   const getRange = (off) => {
     const now = new Date(); const day = now.getDay();
     const mon = new Date(now); mon.setDate(now.getDate() - (day === 0 ? 6 : day - 1) + off * 7); mon.setHours(0,0,0,0);
@@ -11394,10 +11393,8 @@ function MinhaRedeScreen({setPage}) {
       ]);
       ce = ceRes.data || [];
       dc = dcRes.data || [];
-      let ownRes = {data: []};
-      try { ownRes = await db.from('daily_closings').select('courier_value').eq('courier_id', profile.id).in('status', ['submitted','agreed']).gte('date', start).lte('date', end); } catch(e) {}
     }
-    setTeam(teamList); setComms(ce); setEarnings(dc); setOwnClosings(ownRes.data || []); setLoading(false);
+    setTeam(teamList); setComms(ce); setEarnings(dc); setLoading(false);
   }, [profile, weekOff]);
   useEffect(() => { load(); }, [load]);
   const bySource = {};
@@ -11422,7 +11419,6 @@ function MinhaRedeScreen({setPage}) {
   const totalN1 = n1List.reduce((s, u) => s + (bySource[u.id]?.amt || 0), 0);
   const totalN2 = n2List.reduce((s, u) => s + (bySource[u.id]?.amt || 0), 0);
   const totalReceberRede = team.reduce((s, u) => s + (byEarnings[u.id] || 0), 0);
-  const ownEarnings = ownClosings.reduce((a, dc) => a + (+dc.courier_value || 0), 0);
   const {start, end} = getRange(weekOff);
   const fmtD = d => d.slice(5).replace('-', '/');
   const n1Map = {};
@@ -11474,20 +11470,9 @@ function MinhaRedeScreen({setPage}) {
       ),
       /*#__PURE__*/React.createElement("div", {style: {display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: '0 16px 4px'}},
         /*#__PURE__*/React.createElement("div", {className: "mcard"},
-          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "Minhas entregas"),
-          /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--blue)'}}, fmtMoney(ownEarnings)),
-          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "nesta semana")
-        ),
-        /*#__PURE__*/React.createElement("div", {className: "mcard"},
-          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "Comiss\u00e3o de rede"),
+          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "Comiss\u00e3o"),
           /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--amber)'}}, fmtMoney(totalN1 + totalN2)),
           /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "nesta semana")
-        )
-      ),
-      /*#__PURE__*/React.createElement("div", {style: {padding: '0 16px 4px'}},
-        /*#__PURE__*/React.createElement("div", {className: "mcard", style: {display: 'flex', justifyContent: 'space-between', alignItems: 'center'}},
-          /*#__PURE__*/React.createElement("div", {className: "mlbl"}, "Total a receber"),
-          /*#__PURE__*/React.createElement("div", {className: "mval", style: {color: 'var(--green)', marginBottom: 0}}, fmtMoney(ownEarnings + totalN1 + totalN2))
         )
       ),
       /*#__PURE__*/React.createElement("div", {style: {display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '4px 16px 2px'}},
