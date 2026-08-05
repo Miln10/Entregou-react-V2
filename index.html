@@ -2357,7 +2357,7 @@ function AuthPage() {
     }
     const {
       error
-    } = await db.auth.resetPasswordForEmail(fpEmail);
+    } = await db.auth.resetPasswordForEmail(fpEmail,{redirectTo:window.location.origin+'/Entregou-react-V2'});
     if (error) {
       setErr(error.message);
       return;
