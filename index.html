@@ -1533,6 +1533,7 @@ function AuthProvider({
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const loadProfile = async s => {
     const {
       data
@@ -1552,6 +1553,7 @@ function AuthProvider({
       data: l
     } = db.auth.onAuthStateChange(async (ev, s) => {
       setSession(s);
+      if (ev === 'PASSWORD_RECOVERY') { setRecoveryMode(true); setLoading(false); return; }
       if (ev === 'SIGNED_IN' && s) loadProfile(s);
       if (ev === 'SIGNED_OUT') {
         setProfile(null);
@@ -1566,7 +1568,9 @@ function AuthProvider({
       session,
       profile,
       loading,
-      logout
+      logout,
+      recoveryMode,
+      setRecoveryMode
     }
   }, children);
 }
@@ -11507,10 +11511,44 @@ function MinhaRedeScreen({setPage}) {
   );
 }
 
+function PasswordRecoveryScreen() {
+  const {setRecoveryMode} = useAuth();
+  const [pwd, setPwd] = React.useState('');
+  const [pwd2, setPwd2] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState('');
+  const submit = async () => {
+    setErr('');
+    if (pwd.length < 6) { setErr('Mínimo 6 caracteres'); return; }
+    if (pwd !== pwd2) { setErr('Senhas não conferem'); return; }
+    setBusy(true);
+    const {error} = await db.auth.updateUser({password: pwd});
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    toast('Senha atualizada!');
+    await db.auth.signOut();
+    setRecoveryMode(false);
+  };
+  return /*#__PURE__*/React.createElement('div', {style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:'100vh',background:'var(--bg)',padding:16}},
+    React.createElement('div', {style:{background:'var(--card)',borderRadius:16,padding:32,width:'100%',maxWidth:360,boxShadow:'0 2px 20px rgba(0,0,0,.12)'}},
+      React.createElement('div', {style:{textAlign:'center',marginBottom:24}},
+        React.createElement('div', {style:{fontSize:48,marginBottom:8}}, '🔐'),
+        React.createElement('h2', {style:{margin:'0 0 4px',fontSize:20}}, 'Nova Senha'),
+        React.createElement('p', {style:{margin:0,fontSize:13,color:'var(--text2)'}}, 'Digite e confirme sua nova senha')
+      ),
+      err ? React.createElement('div', {style:{background:'#fee2e2',color:'#dc2626',padding:'8px 12px',borderRadius:8,marginBottom:12,fontSize:13}}, err) : null,
+      React.createElement('input', {type:'password',placeholder:'Nova senha',value:pwd,onChange:e=>setPwd(e.target.value),style:{width:'100%',padding:'12px',borderRadius:8,border:'1px solid var(--border)',marginBottom:12,fontSize:15,boxSizing:'border-box',background:'var(--bg)',color:'var(--text)'}}),
+      React.createElement('input', {type:'password',placeholder:'Confirmar senha',value:pwd2,onChange:e=>setPwd2(e.target.value),style:{width:'100%',padding:'12px',borderRadius:8,border:'1px solid var(--border)',marginBottom:20,fontSize:15,boxSizing:'border-box',background:'var(--bg)',color:'var(--text)'}}),
+      React.createElement('button', {onClick:submit,disabled:busy,style:{width:'100%',padding:'14px',borderRadius:10,background:busy?'#86efac':'#22c55e',color:'#fff',border:'none',fontSize:16,fontWeight:700,cursor:busy?'default':'pointer'}}, busy ? 'Aguarde...' : 'Atualizar Senha')
+    )
+  );
+}
 function App() {
   const {
     profile,
-    loading
+    loading,
+    recoveryMode,
+    setRecoveryMode
   } = useAuth();
   const [page, setPageState] = useState(() => localStorage.getItem('entregou_page') || 'auth');
   const setPage = p => {
@@ -11546,6 +11584,7 @@ function App() {
     if (profile.role === 'courier') setPage('courier');
     if (profile.role === 'admin') setPage('admin');
   }, [profile, loading]);
+  if (recoveryMode) return /*#__PURE__*/React.createElement(PasswordRecoveryScreen, null);
   if (loading) return /*#__PURE__*/React.createElement("div", {
     className: "screen",
     style: {
