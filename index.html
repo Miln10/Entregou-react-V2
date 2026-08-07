@@ -9877,6 +9877,7 @@ function AdminRelatorio({
   const [filterNetwork, setFilterNetwork] = useState('');
   const [groupBy, setGroupBy] = useState('none');
   const [tab, setTab] = useState('list'); // list | courier | client | region
+  const [commByEarner, setCommByEarner] = useState({});
 
   const getPeriodRange = () => {
     if (period === 'today') return {
@@ -9954,12 +9955,12 @@ function AdminRelatorio({
       });
     });
     const _closingIds = (closRes.data || []).map(cl => cl.id);
+    const _commByE = {};
     if (_closingIds.length > 0) {
-      const _commQ = await db.from('commission_entries').select('commission_amount').in('closing_id', _closingIds);
-      expanded._commTotal = (_commQ.data || []).reduce((a,c) => a + (+c.commission_amount||0), 0);
-    } else {
-      expanded._commTotal = 0;
+      const _commQ = await db.from('commission_entries').select('earner_id,commission_amount,production_amount').in('closing_id', _closingIds);
+      (_commQ.data || []).forEach(c => { if (!_commByE[c.earner_id]) _commByE[c.earner_id]={amount:0,qty:0}; _commByE[c.earner_id].amount+=(+c.commission_amount||0); _commByE[c.earner_id].qty+=(+c.production_amount||0); });
     }
+    setCommByEarner(_commByE);
     setOrders(expanded);
     setNetworks(netRes.data || []);
     setCouriers(couRes.data || []);
@@ -11330,7 +11331,7 @@ function AdminFin({
       const totalC = wk.orders.reduce((a,o)=>a+(+o.courier_price||0),0);
       const totalG = wk.orders.reduce((a,o)=>a+(+o.gestora_amount||0),0);
       const couMap = {};
-      wk.orders.forEach(o => { if (!o.courier_id) return; if (!couMap[o.courier_id]) couMap[o.courier_id]={id:o.courier_id,name:o.courier_name,number:o.courier_number,count:0,total:0,repasse:0}; couMap[o.courier_id].count++; couMap[o.courier_id].total+=(+o.price||0); couMap[o.courier_id].repasse+=(+o.courier_price||0); });
+      wk.orders.forEach(o => { if (!o.courier_id) return; if (!couMap[o.courier_id]) couMap[o.courier_id]={id:o.courier_id,name:o.courier_name,number:o.courier_number,count:0,total:0,repasse:0,commission:0,commissionQty:0}; couMap[o.courier_id].count++; couMap[o.courier_id].total+=(+o.price||0); couMap[o.courier_id].repasse+=(+o.courier_price||0); }); Object.keys(couMap).forEach(cid => { const ce=commByEarner[cid]; if(ce){couMap[cid].commission=ce.amount;couMap[cid].commissionQty=ce.qty;} });
       return /*#__PURE__*/React.createElement("div", { key: wk.startStr, style: { border: "1px solid var(--border)", borderRadius: "var(--r)", marginBottom: 12, overflow: "hidden" } },
         /*#__PURE__*/React.createElement("div", { style: { padding: "10px 12px", background: "var(--bg2)" } },
           /*#__PURE__*/React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
@@ -11352,14 +11353,16 @@ function AdminFin({
             )
           )
         ),
-        Object.values(couMap).sort((a,b)=>b.total-a.total).map(c => /*#__PURE__*/React.createElement("div", { key: c.id, style: { padding: "8px 12px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        Object.values(couMap).sort((a,b)=>b.repasse-a.repasse).map(c => /*#__PURE__*/React.createElement("div", { key: c.id, style: { padding: "8px 12px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" } },
           /*#__PURE__*/React.createElement("div", null,
             /*#__PURE__*/React.createElement("span", { style: { fontSize: 12, fontWeight: 600 } }, c.name||"—"),
-            c.number ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--text2)", marginLeft: 6 } }, "#", c.number) : null
+            c.number ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--text2)", marginLeft: 6 } }, "#", c.number) : null,
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "var(--text2)", marginTop: 2 } }, c.count, " entrega", c.count !== 1 ? "s" : "", c.commissionQty > 0 ? " · " + c.commissionQty + " geraram comissão" : "")
           ),
           /*#__PURE__*/React.createElement("div", { style: { textAlign: "right" } },
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "var(--blue)" } }, fmtMoney(c.total)),
-            /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "var(--text2)" } }, c.count, " entregas · repasse ", fmtMoney(c.repasse))
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "var(--blue)" } }, fmtMoney(c.repasse + c.commission)),
+            /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: "var(--text2)" } }, fmtMoney(c.repasse), " entregas"),
+            c.commission > 0 ? /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: "var(--green)" } }, fmtMoney(c.commission), " comissão") : null
           )
         ))
       );
