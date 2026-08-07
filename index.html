@@ -10034,6 +10034,8 @@ function AdminRelatorio({
       client: 0,
       courier: 0,
       gestora: 0,
+      commission: 0,
+      commissionQty: 0,
       network: getCourierNetwork(o.courier_id)
     };
     byCourier[k].count++;
@@ -10041,6 +10043,7 @@ function AdminRelatorio({
     byCourier[k].courier += +o.courier_price || 0;
     byCourier[k].gestora += +o.gestora_amount || 0;
   });
+  Object.keys(byCourier).forEach(cid => { const ce=commByEarner[cid]; if(ce){byCourier[cid].commission=ce.amount;byCourier[cid].commissionQty=ce.qty;} });
 
   // Group by client
   const byClient = {};
@@ -10470,7 +10473,7 @@ function AdminRelatorio({
         fontSize: 11,
         color: 'var(--text2)'
       }
-    }, co.count, " entregas", co.network ? ' · ' + co.network : '')), /*#__PURE__*/React.createElement("div", {
+    }, co.count, " entrega", co.count !== 1 ? "s" : "", co.network ? ' · ' + co.network : '', co.commissionQty > 0 ? ' · ' + co.commissionQty + ' geraram comissão' : '')), /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: 'right'
       }
@@ -10480,17 +10483,17 @@ function AdminRelatorio({
         fontWeight: 700,
         color: 'var(--blue)'
       }
-    }, fmtMoney(co.client)), /*#__PURE__*/React.createElement("div", {
+    }, fmtMoney(co.courier + (co.commission||0))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--text2)'
+      }
+    }, fmtMoney(co.courier), " entregas"), co.commission > 0 ? /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: 'var(--green)'
       }
-    }, fmtMoney(co.courier)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: 'var(--amber)'
-      }
-    }, fmtMoney(co.gestora))));
+    }, fmtMoney(co.commission), " comissão") : null));
   })), tab === 'client' && /*#__PURE__*/React.createElement(React.Fragment, null, Object.values(byClient).sort((a, b) => b.count - a.count).map(cl => /*#__PURE__*/React.createElement("div", {
     key: cl.id,
     style: {
