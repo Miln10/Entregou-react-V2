@@ -10038,7 +10038,7 @@ function AdminRelatorio({
       commissionQty: 0,
       network: getCourierNetwork(o.courier_id)
     };
-    byCourier[k].count++;
+    byCourier[k].count += +o.qty || 0;
     byCourier[k].client += +o.price || 0;
     byCourier[k].courier += +o.courier_price || 0;
     byCourier[k].gestora += +o.gestora_amount || 0;
