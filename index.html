@@ -10057,7 +10057,7 @@ function AdminRelatorio({
       courier: 0,
       gestora: 0
     };
-    byClient[k].count++;
+    byClient[k].count += +o.qty || 0;
     byClient[k].client += +o.price || 0;
     byClient[k].courier += +o.courier_price || 0;
     byClient[k].gestora += +o.gestora_amount || 0;
@@ -10074,7 +10074,7 @@ function AdminRelatorio({
       courier: 0,
       gestora: 0
     };
-    byRegion[k].count++;
+    byRegion[k].count += +o.qty || 0;
     byRegion[k].client += +o.price || 0;
     byRegion[k].courier += +o.courier_price || 0;
     byRegion[k].gestora += +o.gestora_amount || 0;
@@ -10090,18 +10090,18 @@ function AdminRelatorio({
       count: 0, client: 0, courier: 0, gestora: 0,
       couriers: {}, regions: {}
     };
-    byUnit[k].count++;
+    byUnit[k].count += +o.qty || 0;
     byUnit[k].client += +o.price || 0;
     byUnit[k].courier += +o.courier_price || 0;
     byUnit[k].gestora += +o.gestora_amount || 0;
     if (o.courier_id) {
       if (!byUnit[k].couriers[o.courier_id]) byUnit[k].couriers[o.courier_id] = { name: o.courier_name, number: o.courier_number, count: 0, total: 0 };
-      byUnit[k].couriers[o.courier_id].count++;
+      byUnit[k].couriers[o.courier_id].count += +o.qty || 0;
       byUnit[k].couriers[o.courier_id].total += +o.courier_price || 0;
     }
     const reg = o.neighborhood || 'Outros';
     if (!byUnit[k].regions[reg]) byUnit[k].regions[reg] = { count: 0, total: 0 };
-    byUnit[k].regions[reg].count++;
+    byUnit[k].regions[reg].count += +o.qty || 0;
     byUnit[k].regions[reg].total += +o.price || 0;
   });
 
